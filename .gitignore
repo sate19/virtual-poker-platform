@@ -1,0 +1,12 @@
+node_modules
+.pnpm-store
+.next
+dist
+packages/*/src/*.js
+coverage
+.env
+.env.local
+.DS_Store
+*.log
+prisma/dev.db
+tmp

@@ -1,0 +1,230 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum RoomStatus {
+  WAITING
+  PLAYING
+  FINISHED
+  CLOSED
+}
+
+enum SeatStatus {
+  OCCUPIED
+  STANDING
+}
+
+enum HandPhase {
+  PREFLOP
+  FLOP
+  TURN
+  RIVER
+  SHOWDOWN
+  FINISHED
+}
+
+enum TournamentStatus {
+  DRAFT
+  REGISTERING
+  PLAYING
+  FINISHED
+  CANCELLED
+}
+
+model User {
+  id                   String             @id @default(cuid())
+  username             String             @unique
+  displayName          String
+  passwordHash         String
+  role                 UserRole           @default(USER)
+  virtualChips         Int                @default(10000)
+  isBanned             Boolean            @default(false)
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+  lastLoginAt          DateTime?
+  stats                UserStats?
+  createdRooms         Room[]             @relation("RoomCreator")
+  roomSeats            RoomSeat[]
+  hands                HandPlayer[]
+  actions              GameAction[]
+  chatMessages         ChatMessage[]
+  auditLogs            AdminAuditLog[]     @relation("AuditActor")
+  chipLedgerEntries    VirtualChipLedger[]
+  tournamentEntries    TournamentPlayer[]
+}
+
+model UserStats {
+  userId               String   @id
+  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  totalHands           Int      @default(0)
+  handsWon             Int      @default(0)
+  voluntarilyPutInPot  Int      @default(0)
+  showdownCount        Int      @default(0)
+  showdownWins         Int      @default(0)
+  netVirtualChips      Int      @default(0)
+  biggestPotWon        Int      @default(0)
+  tournamentsPlayed    Int      @default(0)
+  tournamentsWon       Int      @default(0)
+  updatedAt            DateTime @updatedAt
+}
+
+model Room {
+  id                 String        @id @default(cuid())
+  name               String
+  status             RoomStatus    @default(WAITING)
+  maxPlayers         Int           @default(9)
+  smallBlind         Int
+  bigBlind           Int
+  minBuyIn           Int
+  maxBuyIn           Int
+  allowSpectators    Boolean       @default(true)
+  createdById        String
+  createdBy          User          @relation("RoomCreator", fields: [createdById], references: [id])
+  seats              RoomSeat[]
+  hands              Hand[]
+  chats              ChatMessage[]
+  gameSnapshot       Json?
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+  closedAt           DateTime?
+}
+
+model RoomSeat {
+  id                 String     @id @default(cuid())
+  roomId             String
+  room               Room       @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  userId             String
+  user               User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  seatIndex          Int
+  tableChips         Int
+  ready              Boolean    @default(false)
+  status             SeatStatus @default(OCCUPIED)
+  satAt              DateTime   @default(now())
+  leftAt             DateTime?
+
+  @@unique([roomId, seatIndex])
+  @@unique([roomId, userId])
+}
+
+model Hand {
+  id                 String       @id @default(cuid())
+  roomId             String
+  room               Room         @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  handNumber         Int
+  buttonSeatIndex    Int
+  smallBlind         Int
+  bigBlind           Int
+  board              Json
+  potTotal           Int
+  result             Json
+  stateSnapshot      Json
+  startedAt          DateTime     @default(now())
+  endedAt            DateTime?
+  players            HandPlayer[]
+  actions            GameAction[]
+}
+
+model HandPlayer {
+  id                 String   @id @default(cuid())
+  handId             String
+  hand               Hand     @relation(fields: [handId], references: [id], onDelete: Cascade)
+  userId             String
+  user               User     @relation(fields: [userId], references: [id])
+  seatIndex          Int
+  startingStack      Int
+  endingStack        Int
+  totalCommitted     Int
+  holeCards          Json
+  folded             Boolean
+  wonAmount          Int      @default(0)
+
+  @@unique([handId, userId])
+}
+
+model GameAction {
+  id                 String     @id @default(cuid())
+  roomId             String
+  handId             String?
+  hand               Hand?      @relation(fields: [handId], references: [id], onDelete: SetNull)
+  userId             String?
+  user               User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+  phase              HandPhase?
+  action             String
+  amount             Int?
+  metadata           Json?
+  createdAt          DateTime   @default(now())
+}
+
+model ChatMessage {
+  id                 String   @id @default(cuid())
+  roomId             String
+  room               Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  userId             String
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  message            String
+  createdAt          DateTime @default(now())
+}
+
+model AdminAuditLog {
+  id                 String   @id @default(cuid())
+  actorId            String
+  actor              User     @relation("AuditActor", fields: [actorId], references: [id])
+  action             String
+  targetType         String
+  targetId           String
+  metadata           Json?
+  createdAt          DateTime @default(now())
+}
+
+model VirtualChipLedger {
+  id                 String   @id @default(cuid())
+  userId             String
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  delta              Int
+  reason             String
+  roomId             String?
+  metadata           Json?
+  createdAt          DateTime @default(now())
+}
+
+model Tournament {
+  id                 String             @id @default(cuid())
+  name               String
+  status             TournamentStatus   @default(DRAFT)
+  maxPlayers         Int                @default(9)
+  startingChips      Int                @default(3000)
+  blindSchedule      Json
+  currentLevel       Int                @default(0)
+  handsPerLevel      Int                @default(10)
+  winnerUserId       String?
+  createdById        String
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  startedAt          DateTime?
+  endedAt            DateTime?
+  players            TournamentPlayer[]
+}
+
+model TournamentPlayer {
+  id                 String      @id @default(cuid())
+  tournamentId       String
+  tournament         Tournament  @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  userId             String
+  user               User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  seatIndex          Int?
+  chips              Int
+  finishingPlace     Int?
+  eliminatedAt       DateTime?
+
+  @@unique([tournamentId, userId])
+}
