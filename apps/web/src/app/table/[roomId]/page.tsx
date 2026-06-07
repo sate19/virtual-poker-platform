@@ -76,7 +76,7 @@ export default function TablePage() {
         return;
       }
       setMe(user);
-      activeSocket = io(API_URL, {
+      activeSocket = io(typeof window !== "undefined" ? "" : API_URL, {
         withCredentials: true,
         transports: ["websocket", "polling"],
       });

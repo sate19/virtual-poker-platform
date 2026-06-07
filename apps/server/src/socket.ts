@@ -33,7 +33,9 @@ import {
 export function registerSocket(app: FastifyInstance): Server<ClientToServerEvents, ServerToClientEvents> {
   const io = new Server<ClientToServerEvents, ServerToClientEvents>(app.server, {
     cors: {
-      origin: config.webOrigin,
+      origin: (_origin: string | undefined, cb: (err: Error | null, allow: boolean) => void) => {
+        cb(null, true);
+      },
       credentials: true,
     },
   });

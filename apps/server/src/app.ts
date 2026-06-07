@@ -9,8 +9,21 @@ import { registerSocket } from "./socket";
 export async function buildApp() {
   const app = Fastify({ logger: true });
   await app.register(cookie);
+  app.server.prependListener("request", (req) => {
+    const raw = (req as any).__url_fixed ? undefined : req.url;
+    if (raw && /^\/socket\.io(\?|$)/.test(raw)) {
+      (req as any).__url_fixed = true;
+      Object.defineProperty(req, "url", {
+        value: raw.replace("/socket.io", "/socket.io/"),
+        writable: true,
+        configurable: true,
+      });
+    }
+  });
   await app.register(cors, {
-    origin: config.webOrigin,
+    origin: (_origin, cb) => {
+      cb(null, true);
+    },
     credentials: true,
   });
   app.setErrorHandler((error, _request, reply) => {
