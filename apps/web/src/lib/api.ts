@@ -1,9 +1,12 @@
 import type { AuthUser } from "@friends-poker/shared";
 
-export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+const SERVER_API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+
+export const API_URL = typeof window !== "undefined" ? "" : SERVER_API_URL;
 
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_URL}${path}`, {
+  const base = typeof window !== "undefined" ? "/api" : API_URL;
+  const response = await fetch(`${base}${path}`, {
     ...init,
     credentials: "include",
     headers: {
