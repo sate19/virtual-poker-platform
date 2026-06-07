@@ -38,6 +38,10 @@ export const roomIdSchema = z.object({ roomId: z.string().min(1) });
 
 export const readySchema = roomIdSchema.extend({ ready: z.boolean() });
 
+export const tableChipAdjustmentSchema = roomIdSchema.extend({
+  amount: z.number().int().positive().max(1_000_000),
+});
+
 export const gameActionSchema = roomIdSchema.extend({
   action: z.enum(["fold", "check", "call", "bet", "raise", "all-in"]),
   amount: z.number().int().positive().optional(),

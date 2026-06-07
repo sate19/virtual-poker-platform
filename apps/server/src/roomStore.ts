@@ -316,6 +316,74 @@ export async function standUp(roomId: string, user: AuthUser): Promise<void> {
   room.seats = room.seats.filter((item) => item.userId !== user.id);
 }
 
+export async function addTableChips(roomId: string, user: AuthUser, amount: number): Promise<void> {
+  const room = getRuntimeRoom(roomId);
+  assertCanAdjustSeatChips(room);
+  const seat = room.seats.find((item) => item.userId === user.id);
+  if (!seat) {
+    throw new Error("只有已坐下玩家可以补码");
+  }
+  if (seat.tableChips + amount > room.settings.maxBuyIn) {
+    throw new Error(`桌上筹码不能超过 ${room.settings.maxBuyIn}`);
+  }
+
+  const latestUser = await prisma.user.findUnique({ where: { id: user.id } });
+  if (!latestUser || latestUser.virtualChips < amount) {
+    throw new Error("虚拟筹码不足");
+  }
+
+  await prisma.$transaction([
+    prisma.user.update({
+      where: { id: user.id },
+      data: { virtualChips: { decrement: amount } },
+    }),
+    prisma.virtualChipLedger.create({
+      data: { userId: user.id, delta: -amount, reason: "TABLE_TOP_UP", roomId },
+    }),
+    prisma.roomSeat.update({
+      where: { roomId_userId: { roomId, userId: user.id } },
+      data: { tableChips: { increment: amount } },
+    }),
+  ]);
+
+  seat.tableChips += amount;
+}
+
+export async function removeTableChips(roomId: string, user: AuthUser, amount: number): Promise<void> {
+  const room = getRuntimeRoom(roomId);
+  assertCanAdjustSeatChips(room);
+  const seat = room.seats.find((item) => item.userId === user.id);
+  if (!seat) {
+    throw new Error("只有已坐下玩家可以扣码");
+  }
+  if (amount > seat.tableChips) {
+    throw new Error("扣码数量不能大于桌上筹码");
+  }
+
+  const leavesSeat = amount === seat.tableChips;
+  await prisma.$transaction([
+    prisma.user.update({
+      where: { id: user.id },
+      data: { virtualChips: { increment: amount } },
+    }),
+    prisma.virtualChipLedger.create({
+      data: { userId: user.id, delta: amount, reason: "TABLE_WITHDRAW", roomId },
+    }),
+    prisma.roomSeat.update({
+      where: { roomId_userId: { roomId, userId: user.id } },
+      data: leavesSeat
+        ? { status: "STANDING", tableChips: 0, ready: false, leftAt: new Date() }
+        : { tableChips: { decrement: amount } },
+    }),
+  ]);
+
+  if (leavesSeat) {
+    room.seats = room.seats.filter((item) => item.userId !== user.id);
+  } else {
+    seat.tableChips -= amount;
+  }
+}
+
 export async function setReady(roomId: string, user: AuthUser, ready: boolean): Promise<void> {
   const room = getRuntimeRoom(roomId);
   const seat = room.seats.find((item) => item.userId === user.id);
@@ -374,29 +442,7 @@ export async function startRuntimeHand(roomId: string, user: AuthUser): Promise<
   if (readySeats.length < room.settings.minPlayersToStart) {
     throw new Error(`至少需要 ${room.settings.minPlayersToStart} 名已准备玩家`);
   }
-  room.handCounter += 1;
-  room.game = startHand({
-    handId: randomUUID(),
-    players: readySeats.map((seat) => ({
-      userId: seat.userId,
-      displayName: seat.displayName,
-      seatIndex: seat.seatIndex,
-      stack: seat.tableChips,
-      ready: seat.ready,
-    })),
-    smallBlind: room.settings.smallBlind,
-    bigBlind: room.settings.bigBlind,
-    ante: room.settings.ante,
-    previousButtonSeatIndex: room.game?.buttonSeatIndex,
-    handNumber: room.handCounter,
-  });
-  reconcileActionClock(room.game, room.settings.actionTimeoutSeconds, new Date(), true);
-  room.status = "PLAYING";
-  room.nextHandReadyAt = undefined;
-  clearHandPauseTimer(room.id);
-  syncStacksFromGame(room);
-  await persistRoomSnapshot(room);
-  scheduleActionTimer(room.id);
+  await beginRuntimeHand(room, readySeats);
 }
 
 export async function applyRuntimeAction(roomId: string, user: AuthUser, action: { type: any; amount?: number }): Promise<void> {
@@ -648,9 +694,17 @@ async function handleHandPauseElapsed(roomId: string): Promise<void> {
 
   latest.nextHandReadyAt = undefined;
   const removedBustedSeats = await standUpBustedSeats(latest);
-  if (removedBustedSeats) {
-    await persistRoomSnapshot(latest);
+  const nextHandSeats = latest.seats.filter((seat) => seat.tableChips > 0);
+  if (nextHandSeats.length >= latest.settings.minPlayersToStart) {
+    await beginRuntimeHand(latest, nextHandSeats);
+    if (realtimeServer) {
+      await emitRoomState(realtimeServer, roomId);
+      await emitAllRoomLists(realtimeServer);
+    }
+    return;
   }
+
+  await persistRoomSnapshot(latest);
   if (realtimeServer) {
     await emitRoomState(realtimeServer, roomId);
     if (removedBustedSeats) {
@@ -783,6 +837,44 @@ async function handleActionTimeout(roomId: string, userId: string, deadlineAt: s
       await persistRoomSnapshot(room);
       scheduleActionTimer(room.id);
     }
+  }
+}
+
+async function beginRuntimeHand(room: RuntimeRoom, seats: RuntimeSeat[]): Promise<void> {
+  for (const seat of seats) {
+    seat.ready = true;
+  }
+  room.handCounter += 1;
+  room.game = startHand({
+    handId: randomUUID(),
+    players: seats.map((seat) => ({
+      userId: seat.userId,
+      displayName: seat.displayName,
+      seatIndex: seat.seatIndex,
+      stack: seat.tableChips,
+      ready: true,
+    })),
+    smallBlind: room.settings.smallBlind,
+    bigBlind: room.settings.bigBlind,
+    ante: room.settings.ante,
+    previousButtonSeatIndex: room.game?.buttonSeatIndex,
+    handNumber: room.handCounter,
+  });
+  reconcileActionClock(room.game, room.settings.actionTimeoutSeconds, new Date(), true);
+  room.status = "PLAYING";
+  room.nextHandReadyAt = undefined;
+  clearHandPauseTimer(room.id);
+  syncStacksFromGame(room);
+  await persistRoomSnapshot(room);
+  scheduleActionTimer(room.id);
+}
+
+function assertCanAdjustSeatChips(room: RuntimeRoom): void {
+  if (room.status === "CLOSED") {
+    throw new Error("房间已关闭");
+  }
+  if (room.game && room.game.phase !== "finished") {
+    throw new Error("一手牌进行中不能补码或扣码");
   }
 }
 
@@ -961,6 +1053,7 @@ async function standUpBustedSeats(room: RuntimeRoom): Promise<boolean> {
 }
 
 export const __testing = {
+  handleHandPauseElapsed,
   standUpBustedSeats,
 };
 

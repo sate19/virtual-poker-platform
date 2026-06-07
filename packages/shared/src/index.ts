@@ -65,6 +65,11 @@ export interface ReadyPayload {
   ready: boolean;
 }
 
+export interface AdjustTableChipsPayload {
+  roomId: string;
+  amount: number;
+}
+
 export interface StartGamePayload {
   roomId: string;
 }
@@ -111,6 +116,8 @@ export interface ClientToServerEvents {
   "room:sit": (payload: SitPayload) => void;
   "room:stand": (payload: StandPayload) => void;
   "room:ready": (payload: ReadyPayload) => void;
+  "room:chips:add": (payload: AdjustTableChipsPayload) => void;
+  "room:chips:remove": (payload: AdjustTableChipsPayload) => void;
   "game:start": (payload: StartGamePayload) => void;
   "game:action": (payload: GameActionPayload) => void;
   "game:runout": (payload: RunoutPayload) => void;
@@ -136,6 +143,8 @@ export const SOCKET_EVENTS = {
     "room:sit",
     "room:stand",
     "room:ready",
+    "room:chips:add",
+    "room:chips:remove",
     "game:start",
     "game:action",
     "game:runout",

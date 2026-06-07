@@ -4,10 +4,12 @@ import type { AuthUser, RoomSettingsDto } from "@friends-poker/shared";
 const prismaMock = vi.hoisted(() => ({
   room: {
     create: vi.fn(),
+    update: vi.fn(),
   },
   roomSeat: {
     create: vi.fn(),
     deleteMany: vi.fn(),
+    update: vi.fn(),
     updateMany: vi.fn(),
   },
   user: {
@@ -24,12 +26,29 @@ vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
 
-import { __testing, createRuntimeRoom, sitDown, type RuntimeRoom } from "../src/roomStore";
+import {
+  __testing,
+  addTableChips,
+  createRuntimeRoom,
+  removeTableChips,
+  sitDown,
+  startRuntimeHand,
+  type RuntimeRoom,
+} from "../src/roomStore";
 
 const user: AuthUser = {
   id: "user-1",
   username: "user1",
   displayName: "玩家一",
+  role: "USER",
+  virtualChips: 5000,
+  isBanned: false,
+};
+
+const secondUser: AuthUser = {
+  id: "user-2",
+  username: "user2",
+  displayName: "玩家二",
   role: "USER",
   virtualChips: 5000,
   isBanned: false,
@@ -125,5 +144,117 @@ describe("room store seating", () => {
         tableChips: 1000,
       },
     });
+  });
+
+  it("tops up a seated player without writing hand results or stats", async () => {
+    prismaMock.room.create.mockResolvedValue({
+      id: "room-top-up",
+      name: settings.name,
+      status: "WAITING",
+      maxPlayers: settings.maxPlayers,
+      minPlayersToStart: settings.minPlayersToStart,
+      smallBlind: settings.smallBlind,
+      bigBlind: settings.bigBlind,
+      ante: settings.ante,
+      minBuyIn: settings.minBuyIn,
+      maxBuyIn: settings.maxBuyIn,
+      actionTimeoutSeconds: settings.actionTimeoutSeconds,
+      creatorOnlyStart: settings.creatorOnlyStart,
+      allowSpectators: settings.allowSpectators,
+      createdById: user.id,
+      createdAt: new Date("2026-06-07T00:00:00.000Z"),
+    });
+    prismaMock.user.findUnique.mockResolvedValue({ id: user.id, virtualChips: 5000 });
+
+    const room = await createRuntimeRoom(user, settings);
+    await sitDown("room-top-up", user, 2, 1000);
+    await addTableChips("room-top-up", user, 300);
+
+    expect(room.seats.find((seat) => seat.userId === user.id)?.tableChips).toBe(1300);
+    expect(prismaMock.virtualChipLedger.create).toHaveBeenLastCalledWith({
+      data: { userId: user.id, delta: -300, reason: "TABLE_TOP_UP", roomId: "room-top-up" },
+    });
+    expect(prismaMock.roomSeat.update).toHaveBeenLastCalledWith({
+      where: { roomId_userId: { roomId: "room-top-up", userId: user.id } },
+      data: { tableChips: { increment: 300 } },
+    });
+  });
+
+  it("removes table chips without changing hand profit accounting", async () => {
+    prismaMock.room.create.mockResolvedValue({
+      id: "room-remove",
+      name: settings.name,
+      status: "WAITING",
+      maxPlayers: settings.maxPlayers,
+      minPlayersToStart: settings.minPlayersToStart,
+      smallBlind: settings.smallBlind,
+      bigBlind: settings.bigBlind,
+      ante: settings.ante,
+      minBuyIn: settings.minBuyIn,
+      maxBuyIn: settings.maxBuyIn,
+      actionTimeoutSeconds: settings.actionTimeoutSeconds,
+      creatorOnlyStart: settings.creatorOnlyStart,
+      allowSpectators: settings.allowSpectators,
+      createdById: user.id,
+      createdAt: new Date("2026-06-07T00:00:00.000Z"),
+    });
+    prismaMock.user.findUnique.mockResolvedValue({ id: user.id, virtualChips: 5000 });
+
+    const room = await createRuntimeRoom(user, settings);
+    await sitDown("room-remove", user, 2, 1000);
+    await removeTableChips("room-remove", user, 250);
+
+    expect(room.seats.find((seat) => seat.userId === user.id)?.tableChips).toBe(750);
+    expect(prismaMock.virtualChipLedger.create).toHaveBeenLastCalledWith({
+      data: { userId: user.id, delta: 250, reason: "TABLE_WITHDRAW", roomId: "room-remove" },
+    });
+    expect(prismaMock.roomSeat.update).toHaveBeenLastCalledWith({
+      where: { roomId_userId: { roomId: "room-remove", userId: user.id } },
+      data: { tableChips: { decrement: 250 } },
+    });
+  });
+
+  it("automatically starts the next hand when the hand pause elapses", async () => {
+    prismaMock.room.create.mockResolvedValue({
+      id: "room-auto-next",
+      name: settings.name,
+      status: "WAITING",
+      maxPlayers: settings.maxPlayers,
+      minPlayersToStart: settings.minPlayersToStart,
+      smallBlind: settings.smallBlind,
+      bigBlind: settings.bigBlind,
+      ante: settings.ante,
+      minBuyIn: settings.minBuyIn,
+      maxBuyIn: settings.maxBuyIn,
+      actionTimeoutSeconds: settings.actionTimeoutSeconds,
+      creatorOnlyStart: settings.creatorOnlyStart,
+      allowSpectators: settings.allowSpectators,
+      createdById: user.id,
+      createdAt: new Date("2026-06-07T00:00:00.000Z"),
+    });
+    prismaMock.user.findUnique.mockResolvedValue({ id: user.id, virtualChips: 5000 });
+
+    const room = await createRuntimeRoom(user, settings);
+    await sitDown("room-auto-next", user, 0, 1000);
+    await sitDown("room-auto-next", secondUser, 1, 1000);
+    for (const seat of room.seats) {
+      seat.ready = true;
+    }
+
+    await startRuntimeHand("room-auto-next", user);
+    const firstHandId = room.game?.handId;
+    if (!room.game) {
+      throw new Error("missing started game");
+    }
+    room.game.phase = "finished";
+    room.nextHandReadyAt = new Date(Date.now() - 1000).toISOString();
+
+    await __testing.handleHandPauseElapsed("room-auto-next");
+
+    expect(room.status).toBe("PLAYING");
+    expect(room.game?.handNumber).toBe(2);
+    expect(room.game?.handId).not.toBe(firstHandId);
+    expect(room.nextHandReadyAt).toBeUndefined();
+    expect(room.seats.every((seat) => seat.ready)).toBe(true);
   });
 });

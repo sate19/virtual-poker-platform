@@ -1,11 +1,19 @@
 "use client";
 
 import { useParams } from "next/navigation";
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { io, type Socket } from "socket.io-client";
 import { CircleDollarSign, DoorOpen, Menu, NotebookText, Play, Send, UserRoundPlus, Volume2 } from "lucide-react";
 import type { AuthUser, ChatMessageDto, ClientToServerEvents, RunoutMode, ServerToClientEvents } from "@friends-poker/shared";
-import type { Card, PublicPokerGameState } from "@friends-poker/poker-engine";
+import {
+  compareEvaluations,
+  evaluateFiveCards,
+  type Card,
+  type HandCategory,
+  type HandEvaluation,
+  type PublicEnginePlayer,
+  type PublicPokerGameState,
+} from "@friends-poker/poker-engine";
 import { API_URL, getMe } from "../../../lib/api";
 import { formatCard, isRed } from "../../../lib/cards";
 
@@ -42,16 +50,29 @@ interface RoomState {
 }
 
 const seatPositions = [
-  [50, 91],
-  [22, 82],
-  [9, 56],
-  [15, 25],
-  [38, 10],
-  [62, 10],
-  [85, 25],
-  [91, 56],
-  [78, 82],
+  [50, 92],
+  [22, 83],
+  [8, 56],
+  [14, 24],
+  [38, 9],
+  [62, 9],
+  [86, 24],
+  [92, 56],
+  [78, 83],
 ];
+
+const handCategoryLabel: Record<HandCategory, string> = {
+  "High Card": "高牌",
+  "One Pair": "一对",
+  "Two Pair": "两对",
+  "Three of a Kind": "三条",
+  Straight: "顺子",
+  Flush: "同花",
+  "Full House": "葫芦",
+  "Four of a Kind": "四条",
+  "Straight Flush": "同花顺",
+  "Royal Flush": "皇家同花顺",
+};
 
 export default function TablePage() {
   const params = useParams<{ roomId: string }>();
@@ -65,7 +86,9 @@ export default function TablePage() {
   const [seatIndex, setSeatIndex] = useState(0);
   const [buyIn, setBuyIn] = useState(1000);
   const [amount, setAmount] = useState(20);
+  const [chipAmount, setChipAmount] = useState(200);
   const [nowMs, setNowMs] = useState(Date.now());
+  const pendingMeRefreshRef = useRef(false);
 
   useEffect(() => {
     let activeSocket: TypedSocket | undefined;
@@ -85,12 +108,25 @@ export default function TablePage() {
         activeSocket?.emit("room:join", { roomId });
         activeSocket?.emit("state:request", { roomId });
       });
-      activeSocket.on("room:state", (state) => setRoom(state as RoomState));
+      activeSocket.on("room:state", (state) => {
+        setRoom(state as RoomState);
+        if (pendingMeRefreshRef.current) {
+          pendingMeRefreshRef.current = false;
+          void getMe().then((currentUser) => {
+            if (currentUser) {
+              setMe(currentUser);
+            }
+          });
+        }
+      });
       activeSocket.on("game:state", (state) =>
         setRoom((prev) => (prev ? { ...prev, game: state as PublicPokerGameState } : prev)),
       );
       activeSocket.on("chat:message", (message) => setMessages((prev) => [...prev.slice(-80), message]));
-      activeSocket.on("error", (payload) => setError(payload.message));
+      activeSocket.on("error", (payload) => {
+        pendingMeRefreshRef.current = false;
+        setError(payload.message);
+      });
     }
     void connect();
     return () => {
@@ -104,8 +140,10 @@ export default function TablePage() {
     return () => window.clearInterval(timer);
   }, []);
 
+  const maxPlayers = room?.settings.maxPlayers ?? 9;
   const mySeat = room?.seats.find((seat) => seat.userId === me?.id);
   const currentPlayer = room?.game?.players.find((player) => player.userId === room.game?.currentTurnUserId);
+  const myPlayer = room?.game?.players.find((player) => player.userId === me?.id);
   const actionClock = room?.game?.actionClock;
   const remainingMs = actionClock ? Math.max(0, Date.parse(actionClock.deadlineAt) - nowMs) : undefined;
   const remainingSeconds = remainingMs === undefined ? undefined : Math.ceil(remainingMs / 1000);
@@ -118,16 +156,32 @@ export default function TablePage() {
   const isHandPaused = nextHandSeconds > 0;
   const isRevealing = room?.game?.phase === "revealing";
   const isFinished = room?.game?.phase === "finished";
+  const isActiveHand = Boolean(room?.game && !isFinished);
   const runoutSelection = room?.game?.runoutSelection;
   const isRunoutEligible = Boolean(me?.id && runoutSelection?.eligiblePlayerIds.includes(me.id));
   const myRunoutVote = me?.id && runoutSelection ? runoutSelection.votes[me.id] : undefined;
   const runoutBoards = room?.game?.runoutBoards;
   const actionEnabled = isMyTurn(room, me) && !runoutSelection && !isRevealing && !isFinished;
+  const toCall = myPlayer && room?.game ? Math.max(0, room.game.currentBet - myPlayer.committedThisStreet) : 0;
+  const betOrRaiseAction = room?.game && room.game.currentBet > 0 ? "raise" : "bet";
+  const canAdjustChips = Boolean(mySeat && !isActiveHand);
 
   const potTotal = useMemo(
     () => room?.game?.players.reduce((sum, player) => sum + player.totalCommitted, 0) ?? 0,
     [room?.game?.players],
   );
+
+  const potQuickAmounts = useMemo(() => {
+    if (!room?.game || !myPlayer) {
+      return [];
+    }
+    return [0.33, 0.5, 0.66, 1].map((ratio) => ({
+      ratio,
+      label: `${Math.round(ratio * 100)}%池`,
+      amount: potSizedAmount(room.game!, myPlayer, potTotal, ratio),
+    }));
+  }, [myPlayer, potTotal, room?.game]);
+
   const winnerDeltas = useMemo(() => {
     const deltas = new Map<string, number>();
     if (room?.game?.phase !== "finished") {
@@ -141,6 +195,7 @@ export default function TablePage() {
     }
     return deltas;
   }, [room?.game]);
+
   const winners = useMemo(
     () =>
       room?.game?.players
@@ -149,6 +204,7 @@ export default function TablePage() {
         .sort((a, b) => b.delta - a.delta) ?? [],
     [room?.game?.players, winnerDeltas],
   );
+
   const equityByUserId = useMemo(() => {
     const equities = new Map<string, { winPercent: number; tiePercent: number; samples: number }>();
     const sourceBoards = runoutBoards?.filter((board) => board.equities?.length) ?? [];
@@ -185,6 +241,15 @@ export default function TablePage() {
     });
   }
 
+  function sendBetOrRaise() {
+    sendAction(betOrRaiseAction);
+  }
+
+  function adjustTableChips(type: "add" | "remove") {
+    pendingMeRefreshRef.current = true;
+    emit(type === "add" ? "room:chips:add" : "room:chips:remove", { roomId, amount: chipAmount });
+  }
+
   function sendRunout(mode: RunoutMode) {
     emit("game:runout", { roomId, mode });
   }
@@ -219,7 +284,7 @@ export default function TablePage() {
                 disabled={isHandPaused || Boolean(room?.game && room.game.phase !== "finished")}
                 onClick={() => emit("game:start", { roomId })}
               >
-                <Play size={17} /> {isHandPaused ? `${nextHandSeconds} 秒后可开始` : "开始一手"}
+                <Play size={17} /> {isHandPaused ? `${nextHandSeconds} 秒后自动开局` : "开始一手"}
               </button>
               <button className="btn" onClick={() => emit("room:stand", { roomId })}>
                 <DoorOpen size={17} /> 站起
@@ -228,7 +293,7 @@ export default function TablePage() {
           ) : (
             <div className="actions">
               <select className="select" value={seatIndex} onChange={(event) => setSeatIndex(Number(event.target.value))}>
-                {Array.from({ length: room?.settings.maxPlayers ?? 9 }, (_, index) => (
+                {Array.from({ length: maxPlayers }, (_, index) => (
                   <option key={index} value={index}>
                     {index + 1} 号位
                   </option>
@@ -273,6 +338,7 @@ export default function TablePage() {
               <div className="potPill">
                 <CircleDollarSign size={18} /> {potTotal}
               </div>
+              {room?.game && room.game.currentBet > 0 && <span className="streetBetPill">本轮最高 {room.game.currentBet}</span>}
               {runoutBoards && runoutBoards.length > 1 ? (
                 <div className="runoutBoards">
                   {runoutBoards.map((board, boardIndex) => (
@@ -301,19 +367,21 @@ export default function TablePage() {
               {isFinished && winners.length > 0 && (
                 <div className="resultBanner">
                   {winners.map(({ player, delta }) => `${player.displayName} +${delta}`).join(" · ")}
-                  {nextHandSeconds > 0 ? ` · ${nextHandSeconds} 秒后可开始下一手` : ""}
+                  {nextHandSeconds > 0 ? ` · ${nextHandSeconds} 秒后自动下一手` : ""}
                 </div>
               )}
             </div>
 
-            {Array.from({ length: room?.settings.maxPlayers ?? 9 }, (_, index) => {
+            {Array.from({ length: maxPlayers }, (_, index) => {
               const seat = room?.seats.find((item) => item.seatIndex === index);
               const player = room?.game?.players.find((item) => item.userId === seat?.userId);
-              const [left, top] = seatPositions[index] ?? [50, 50];
+              const positionIndex = displaySeatIndex(index, mySeat?.seatIndex, maxPlayers);
+              const [left, top] = seatPositions[positionIndex] ?? [50, 50];
               const blindLabel =
                 room?.game?.smallBlindSeatIndex === index ? "SB" : room?.game?.bigBlindSeatIndex === index ? "BB" : "";
               const handDelta = player ? winnerDeltas.get(player.userId) ?? 0 : 0;
               const equity = seat ? equityByUserId.get(seat.userId) : undefined;
+              const currentHand = describeCurrentHand(player, room?.game?.communityCards ?? []);
               return (
                 <div
                   className={`seat ${seat ? "" : "seatEmpty"} ${
@@ -336,6 +404,8 @@ export default function TablePage() {
                       <div className="muted">
                         {actionLabel(player?.lastAction ?? player?.status)} · 投入 {player?.totalCommitted ?? 0}
                       </div>
+                      {player && player.committedThisStreet > 0 && <div className="streetBetBadge">本轮 {player.committedThisStreet}</div>}
+                      {currentHand && <div className="handStrengthBadge">{currentHand}</div>}
                       {isRevealing && equity && (
                         <div className="equityBadge">
                           胜率 {formatPercent(equity.winPercent)}
@@ -372,8 +442,8 @@ export default function TablePage() {
                 ? "全下后无人可继续行动，系统正在逐张发牌"
                 : isFinished
                   ? nextHandSeconds > 0
-                    ? `本手已结算，${nextHandSeconds} 秒后可开始下一手`
-                    : "本手已结算，可以准备下一手"
+                    ? `本手已结算，${nextHandSeconds} 秒后自动开始下一手`
+                    : "本手已结算，等待自动下一手"
                   : currentPlayer && remainingSeconds !== undefined
                     ? `当前行动：${currentPlayer.displayName} · ${remainingSeconds} 秒`
                     : "等待下一次行动"}
@@ -407,14 +477,24 @@ export default function TablePage() {
               过牌
             </button>
             <button className="btn" disabled={!actionEnabled} onClick={() => sendAction("call")}>
-              跟注
+              跟注{toCall > 0 ? ` ${toCall}` : ""}
             </button>
+            <div className="potQuickButtons">
+              {potQuickAmounts.map((option) => (
+                <button
+                  className="btn quickBetButton"
+                  disabled={!actionEnabled}
+                  key={option.label}
+                  onClick={() => setAmount(option.amount)}
+                  type="button"
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
             <input className="input betInput" type="number" value={amount} onChange={(event) => setAmount(Number(event.target.value))} />
-            <button className="btn" disabled={!actionEnabled} onClick={() => sendAction("bet")}>
-              下注
-            </button>
-            <button className="btn" disabled={!actionEnabled} onClick={() => sendAction("raise")}>
-              加注到
+            <button className="btn" disabled={!actionEnabled} onClick={sendBetOrRaise}>
+              {betOrRaiseAction === "raise" ? "加注到" : "下注"}
             </button>
             <button className="btn btnPrimary" disabled={!actionEnabled} onClick={() => sendAction("all-in")}>
               全下
@@ -430,8 +510,28 @@ export default function TablePage() {
               <strong>{me?.displayName}</strong>
             </div>
             <div className="statRow">
+              <span className="muted">账户筹码</span>
+              <strong>{me?.virtualChips ?? 0}</strong>
+            </div>
+            <div className="statRow">
               <span className="muted">桌上筹码</span>
               <strong>{mySeat?.tableChips ?? 0}</strong>
+            </div>
+            <div className="chipAdjustPanel">
+              <input
+                className="input"
+                min={1}
+                type="number"
+                value={chipAmount}
+                onChange={(event) => setChipAmount(Number(event.target.value))}
+              />
+              <button className="btn" disabled={!canAdjustChips} onClick={() => adjustTableChips("add")}>
+                补码
+              </button>
+              <button className="btn" disabled={!canAdjustChips} onClick={() => adjustTableChips("remove")}>
+                扣码
+              </button>
+              {!canAdjustChips && <small className="muted">一手牌结束后可调整</small>}
             </div>
             <div className="statRow">
               <span className="muted">观战人数</span>
@@ -475,6 +575,25 @@ export default function TablePage() {
 
 function isMyTurn(room?: RoomState, me?: AuthUser): boolean {
   return Boolean(room?.game?.currentTurnUserId && me?.id && room.game.currentTurnUserId === me.id);
+}
+
+function displaySeatIndex(seatIndex: number, selfSeatIndex: number | undefined, maxPlayers: number): number {
+  if (selfSeatIndex === undefined) {
+    return seatIndex;
+  }
+  return (seatIndex - selfSeatIndex + maxPlayers) % maxPlayers;
+}
+
+function potSizedAmount(game: PublicPokerGameState, player: PublicEnginePlayer, potTotal: number, ratio: number): number {
+  const toCall = Math.max(0, game.currentBet - player.committedThisStreet);
+  const maxTarget = player.committedThisStreet + player.stack;
+  if (game.currentBet > 0) {
+    const potAfterCall = potTotal + toCall;
+    const target = player.committedThisStreet + toCall + Math.round(potAfterCall * ratio);
+    return Math.max(game.currentBet + game.minRaise, Math.min(maxTarget, target));
+  }
+  const target = Math.round(potTotal * ratio);
+  return Math.max(game.bigBlind, Math.min(maxTarget, target || game.bigBlind));
 }
 
 function centerStatusText(room?: RoomState, currentDisplayName?: string, nextHandSeconds = 0): string {
@@ -544,6 +663,46 @@ function actionLabel(action?: string): string {
     return "翻出公共牌";
   }
   return labels[action] ?? action;
+}
+
+function describeCurrentHand(player: PublicEnginePlayer | undefined, communityCards: Card[]): string | undefined {
+  const holeCards = player?.holeCards;
+  if (!holeCards || holeCards.length === 0 || player?.status === "folded") {
+    return undefined;
+  }
+  const cards = [...holeCards, ...communityCards];
+  if (cards.length < 5) {
+    if (holeCards.length === 2 && holeCards[0]?.rank === holeCards[1]?.rank) {
+      return "一对";
+    }
+    return `高牌 ${holeCards.map((card) => card.rank).join("/")}`;
+  }
+  const evaluation = bestEvaluation(cards);
+  return evaluation ? handCategoryLabel[evaluation.category] : undefined;
+}
+
+function bestEvaluation(cards: Card[]): HandEvaluation | undefined {
+  if (cards.length < 5) {
+    return undefined;
+  }
+  return combinations(cards, 5)
+    .map((combo) => evaluateFiveCards(combo))
+    .sort(compareEvaluations)
+    .at(-1);
+}
+
+function combinations<T>(items: T[], size: number): T[][] {
+  if (size === 0) {
+    return [[]];
+  }
+  if (items.length < size) {
+    return [];
+  }
+  const [head, ...tail] = items;
+  return [
+    ...combinations(tail, size - 1).map((combo) => [head!, ...combo]),
+    ...combinations(tail, size),
+  ];
 }
 
 function formatPercent(value: number): string {

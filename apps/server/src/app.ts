@@ -2,7 +2,6 @@ import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
 import Fastify from "fastify";
 import { ZodError } from "zod";
-import { config } from "./config";
 import { registerRoutes } from "./routes";
 import { registerSocket } from "./socket";
 

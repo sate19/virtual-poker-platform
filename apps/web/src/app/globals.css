@@ -402,7 +402,7 @@ button:disabled {
   min-height: calc(100vh - 92px);
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
+  grid-template-columns: minmax(0, 1fr) 300px;
   gap: 12px;
   align-items: start;
 }
@@ -447,10 +447,10 @@ button:disabled {
 
 .pokerTable {
   position: relative;
-  width: min(940px, 100%);
+  width: min(1120px, 100%);
   aspect-ratio: 2 / 1;
-  min-width: 700px;
-  min-height: 500px;
+  min-width: 820px;
+  min-height: 590px;
   border-radius: 50%;
   background:
     radial-gradient(ellipse at center, rgba(255, 255, 255, 0.16), transparent 39%),
@@ -493,7 +493,8 @@ button:disabled {
 
 .potPill,
 .turnPill,
-.timerPill {
+.timerPill,
+.streetBetPill {
   min-width: 132px;
   min-height: 40px;
   display: inline-flex;
@@ -523,6 +524,17 @@ button:disabled {
   color: #101010;
   background: rgba(244, 207, 57, 0.9);
   font-size: 15px;
+  font-weight: 900;
+}
+
+.streetBetPill {
+  min-width: 108px;
+  min-height: 30px;
+  padding: 0 16px;
+  color: #fff4ad;
+  background: rgba(244, 207, 57, 0.18);
+  border: 1px solid rgba(244, 207, 57, 0.42);
+  font-size: 14px;
   font-weight: 900;
 }
 
@@ -748,6 +760,42 @@ button:disabled {
   white-space: nowrap;
 }
 
+.streetBetBadge,
+.handStrengthBadge {
+  width: fit-content;
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.streetBetBadge {
+  background: rgba(244, 207, 57, 0.18);
+  color: #ffe473;
+  border: 1px solid rgba(244, 207, 57, 0.42);
+}
+
+.handStrengthBadge {
+  background: rgba(47, 212, 117, 0.14);
+  color: #bafbd0;
+  border: 1px solid rgba(47, 212, 117, 0.35);
+}
+
+.seatActive .streetBetBadge {
+  color: #775b00;
+  background: rgba(244, 207, 57, 0.28);
+}
+
+.seatActive .handStrengthBadge {
+  color: #126233;
+  background: rgba(47, 212, 117, 0.18);
+}
+
 .seatActive .equityBadge {
   color: #24437c;
   background: rgba(120, 165, 255, 0.2);
@@ -870,7 +918,7 @@ button:disabled {
 .actionDock {
   position: static;
   z-index: 10;
-  width: min(660px, 100%);
+  width: min(760px, 100%);
   justify-self: end;
   display: grid;
   grid-template-columns: repeat(4, minmax(120px, 1fr));
@@ -879,6 +927,19 @@ button:disabled {
   background: transparent;
   border: 0;
   box-shadow: none;
+}
+
+.potQuickButtons {
+  grid-column: span 2;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.quickBetButton {
+  min-height: 42px !important;
+  padding: 0 8px;
+  font-size: 13px !important;
 }
 
 .actionClockBanner {
@@ -951,6 +1012,18 @@ button:disabled {
 .betInput {
   width: 100%;
   text-align: center;
+}
+
+.chipAdjustPanel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+}
+
+.chipAdjustPanel small {
+  grid-column: 1 / -1;
 }
 
 .sidePanel {

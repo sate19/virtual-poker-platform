@@ -14,6 +14,8 @@ import {
   joinAsSpectator,
   leaveRoom,
   rememberSocket,
+  addTableChips,
+  removeTableChips,
   sendChatMessage,
   setReady,
   sitDown,
@@ -28,6 +30,7 @@ import {
   roomIdSchema,
   runoutSchema,
   sitSchema,
+  tableChipAdjustmentSchema,
 } from "./validation";
 
 export function registerSocket(app: FastifyInstance): Server<ClientToServerEvents, ServerToClientEvents> {
@@ -112,6 +115,24 @@ export function registerSocket(app: FastifyInstance): Server<ClientToServerEvent
         const { roomId, ready } = readySchema.parse(payload);
         await setReady(roomId, user, ready);
         await emitRoomState(io, roomId);
+      });
+    });
+
+    socket.on("room:chips:add", async (payload) => {
+      await guarded(socket, async () => {
+        const { roomId, amount } = tableChipAdjustmentSchema.parse(payload);
+        await addTableChips(roomId, user, amount);
+        await emitRoomState(io, roomId);
+        await emitAllRoomLists(io);
+      });
+    });
+
+    socket.on("room:chips:remove", async (payload) => {
+      await guarded(socket, async () => {
+        const { roomId, amount } = tableChipAdjustmentSchema.parse(payload);
+        await removeTableChips(roomId, user, amount);
+        await emitRoomState(io, roomId);
+        await emitAllRoomLists(io);
       });
     });
 

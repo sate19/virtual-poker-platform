@@ -1,10 +1,10 @@
 import type { Card } from "@friends-poker/poker-engine";
 
 const suitSymbol: Record<string, string> = {
-  s: "♠",
-  h: "♥",
-  d: "♦",
-  c: "♣",
+  s: "\u2660",
+  h: "\u2665",
+  d: "\u2666",
+  c: "\u2663",
 };
 
 export function formatCard(card?: Card): string {
