@@ -16,7 +16,7 @@ export function setSessionCookie(reply: FastifyReply, token: string): void {
   reply.setCookie(config.cookieName, token, {
     httpOnly: true,
     sameSite: "lax",
-    secure: config.nodeEnv === "production",
+    secure: config.cookieSecure,
     path: "/",
     maxAge: 60 * 60 * 24 * 14,
   });

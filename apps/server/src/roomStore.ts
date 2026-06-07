@@ -136,6 +136,8 @@ export async function hydrateRoomsFromDatabase(): Promise<void> {
       } else if (reconcileActionClock(room.game, room.settings.actionTimeoutSeconds, new Date())) {
         await persistRoomSnapshot(room);
       }
+    } else {
+      await standUpBustedSeats(room);
     }
 
     rooms.set(persisted.id, room);
@@ -250,6 +252,13 @@ export async function sitDown(roomId: string, user: AuthUser, seatIndex: number,
   }
 
   await prisma.$transaction([
+    prisma.roomSeat.deleteMany({
+      where: {
+        roomId,
+        status: "STANDING",
+        OR: [{ userId: user.id }, { seatIndex }],
+      },
+    }),
     prisma.user.update({
       where: { id: user.id },
       data: { virtualChips: { decrement: buyIn } },
@@ -622,19 +631,32 @@ function scheduleHandPauseTimer(roomId: string): void {
   }
   const delayMs = Math.max(0, Date.parse(room.nextHandReadyAt) - Date.now());
   const timer = setTimeout(() => {
-    handPauseTimers.delete(roomId);
-    const latest = rooms.get(roomId);
-    if (!latest || latest.status === "CLOSED") {
-      return;
-    }
-    if (latest.nextHandReadyAt && Date.parse(latest.nextHandReadyAt) <= Date.now()) {
-      latest.nextHandReadyAt = undefined;
-      if (realtimeServer) {
-        void emitRoomState(realtimeServer, roomId);
-      }
-    }
+    void handleHandPauseElapsed(roomId);
   }, delayMs + 25);
   handPauseTimers.set(roomId, timer);
+}
+
+async function handleHandPauseElapsed(roomId: string): Promise<void> {
+  handPauseTimers.delete(roomId);
+  const latest = rooms.get(roomId);
+  if (!latest || latest.status === "CLOSED") {
+    return;
+  }
+  if (!latest.nextHandReadyAt || Date.parse(latest.nextHandReadyAt) > Date.now()) {
+    return;
+  }
+
+  latest.nextHandReadyAt = undefined;
+  const removedBustedSeats = await standUpBustedSeats(latest);
+  if (removedBustedSeats) {
+    await persistRoomSnapshot(latest);
+  }
+  if (realtimeServer) {
+    await emitRoomState(realtimeServer, roomId);
+    if (removedBustedSeats) {
+      await emitAllRoomLists(realtimeServer);
+    }
+  }
 }
 
 function clearOfflineCloseTimer(roomId: string): void {
@@ -901,6 +923,7 @@ async function settleFinishedRoomIfNeeded(room: RuntimeRoom): Promise<boolean> {
 
   clearActionTimer(room.id);
   delete room.game.actionClock;
+  syncStacksFromGame(room);
   await persistFinishedHand(room);
   for (const seat of room.seats) {
     seat.ready = false;
@@ -912,6 +935,34 @@ async function settleFinishedRoomIfNeeded(room: RuntimeRoom): Promise<boolean> {
   scheduleHandPauseTimer(room.id);
   return true;
 }
+
+async function standUpBustedSeats(room: RuntimeRoom): Promise<boolean> {
+  const bustedSeats = room.seats.filter((seat) => seat.tableChips <= 0);
+  if (bustedSeats.length === 0) {
+    return false;
+  }
+
+  await prisma.roomSeat.updateMany({
+    where: {
+      roomId: room.id,
+      userId: { in: bustedSeats.map((seat) => seat.userId) },
+      status: "OCCUPIED",
+    },
+    data: {
+      status: "STANDING",
+      tableChips: 0,
+      ready: false,
+      leftAt: new Date(),
+    },
+  });
+
+  room.seats = room.seats.filter((seat) => seat.tableChips > 0);
+  return true;
+}
+
+export const __testing = {
+  standUpBustedSeats,
+};
 
 function forcedCommitmentForSeat(room: RuntimeRoom, seatIndex: number): number {
   let forced = room.settings.ante;
