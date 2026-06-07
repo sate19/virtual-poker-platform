@@ -2,11 +2,18 @@ import { createDeck, dealOne, shuffleDeck } from "./cards";
 import { compareEvaluations, evaluateSevenCards } from "./handEvaluator";
 import { awardSidePots, buildSidePots } from "./sidePots";
 import type {
+  Card,
   EnginePlayer,
   GameActionLogEntry,
+  HandEvaluation,
+  PotAward,
   PokerAction,
   PokerGameState,
   PublicPokerGameState,
+  RunoutBoard,
+  RunoutEquity,
+  RunoutMode,
+  RunoutPlan,
 } from "./types";
 
 export interface StartHandInput {
@@ -20,6 +27,7 @@ export interface StartHandInput {
   }>;
   smallBlind: number;
   bigBlind: number;
+  ante?: number;
   previousButtonSeatIndex?: number;
   handNumber?: number;
   random?: () => number;
@@ -71,6 +79,7 @@ export function startHand(input: StartHandInput): PokerGameState {
     phase: "preflop",
     smallBlind: input.smallBlind,
     bigBlind: input.bigBlind,
+    ante: input.ante ?? 0,
     buttonSeatIndex,
     smallBlindSeatIndex,
     bigBlindSeatIndex,
@@ -87,6 +96,7 @@ export function startHand(input: StartHandInput): PokerGameState {
     handNumber: input.handNumber ?? 1,
   };
 
+  postAntes(state, input.ante ?? 0);
   postBlind(state, smallBlindSeatIndex, input.smallBlind, "post-small-blind");
   postBlind(state, bigBlindSeatIndex, input.bigBlind, "post-big-blind");
   state.currentBet = Math.max(...state.players.map((player) => player.committedThisStreet));
@@ -149,11 +159,65 @@ export function applyAction(state: PokerGameState, userId: string, action: Poker
   return progressGame(next);
 }
 
+export function chooseRunout(state: PokerGameState, userId: string, mode: RunoutMode): PokerGameState {
+  const next = cloneState(state);
+  if (next.phase !== "runout" || !next.runoutSelection) {
+    throw new Error("当前牌局不需要选择发牌次数");
+  }
+  if (!next.runoutSelection.eligiblePlayerIds.includes(userId)) {
+    throw new Error("只有仍参与摊牌的玩家可以选择发牌次数");
+  }
+
+  next.runoutSelection.votes[userId] = mode;
+  log(next, userId, mode === "twice" ? "run-it-twice-vote" : "run-it-once");
+
+  if (mode === "once") {
+    return startRunoutReveal(next, "once");
+  }
+
+  const allAcceptedTwice = next.runoutSelection.eligiblePlayerIds.every(
+    (playerId) => next.runoutSelection?.votes[playerId] === "twice",
+  );
+  return allAcceptedTwice ? startRunoutReveal(next, "twice") : next;
+}
+
+export function advanceRunoutReveal(state: PokerGameState): PokerGameState {
+  const next = cloneState(state);
+  if (next.phase !== "revealing") {
+    throw new Error("当前牌局不在逐张发牌阶段");
+  }
+  if (!next.runoutBoards?.length || !next.runoutPlan?.length) {
+    return finalizeRunout(next);
+  }
+
+  const board = next.runoutBoards.find((item) => !item.isComplete && item.cards.length < 5);
+  if (!board) {
+    return finalizeRunout(next);
+  }
+
+  const plan = next.runoutPlan.find((item) => item.id === board.id);
+  const card = plan?.cards[board.cards.length];
+  if (card) {
+    board.cards.push({ ...card });
+    log(next, undefined, `runout-card-${board.id}`);
+  }
+  board.isComplete = board.cards.length >= 5;
+  next.communityCards = next.runoutBoards[0]?.cards.map((item) => ({ ...item })) ?? [];
+
+  if (next.runoutBoards.every((item) => item.isComplete || item.cards.length >= 5)) {
+    return finalizeRunout(next);
+  }
+
+  updateRunoutEquities(next);
+  return next;
+}
+
 export function getPublicGameStateForUser(
   state: PokerGameState,
   userId?: string,
 ): PublicPokerGameState {
-  const canShowdown = state.phase === "showdown" || state.phase === "finished";
+  const canShowdown =
+    state.phase === "showdown" || state.phase === "runout" || state.phase === "revealing" || state.phase === "finished";
   const showdownPlayerIds = new Set(
     canShowdown
       ? state.players
@@ -167,6 +231,7 @@ export function getPublicGameStateForUser(
     phase: state.phase,
     smallBlind: state.smallBlind,
     bigBlind: state.bigBlind,
+    ante: state.ante,
     buttonSeatIndex: state.buttonSeatIndex,
     smallBlindSeatIndex: state.smallBlindSeatIndex,
     bigBlindSeatIndex: state.bigBlindSeatIndex,
@@ -178,6 +243,7 @@ export function getPublicGameStateForUser(
       userId: player.userId,
       displayName: player.displayName,
       seatIndex: player.seatIndex,
+      startingStack: player.startingStack,
       stack: player.stack,
       status: player.status,
       ready: player.ready,
@@ -195,6 +261,26 @@ export function getPublicGameStateForUser(
     awards: state.awards.map((award) => ({ ...award })),
     showdownEvaluations: canShowdown ? { ...state.showdownEvaluations } : {},
     handNumber: state.handNumber,
+    actionClock: state.actionClock ? { ...state.actionClock } : undefined,
+    runoutSelection: state.runoutSelection
+      ? {
+          ...state.runoutSelection,
+          eligiblePlayerIds: [...state.runoutSelection.eligiblePlayerIds],
+          votes: { ...state.runoutSelection.votes },
+        }
+      : undefined,
+    runoutMode: state.runoutMode,
+    runoutBoards: canShowdown
+      ? state.runoutBoards?.map((board) => ({
+          ...board,
+          cards: board.cards.map((card) => ({ ...card })),
+          awards: board.awards.map((award) => ({ ...award })),
+          payouts: { ...board.payouts },
+          showdownEvaluations: { ...board.showdownEvaluations },
+          equities: board.equities?.map((equity) => ({ ...equity })),
+          isComplete: board.isComplete,
+        }))
+      : undefined,
   };
 }
 
@@ -294,9 +380,8 @@ function progressGame(state: PokerGameState): PokerGameState {
     return state;
   }
 
-  if (remaining.every((player) => player.status === "all-in")) {
-    dealCommunityToShowdown(state);
-    return finishByShowdown(state);
+  if (shouldResolveWithoutFurtherBetting(state)) {
+    return beginRunoutOrShowdown(state);
   }
 
   if (state.phase === "river") {
@@ -304,14 +389,40 @@ function progressGame(state: PokerGameState): PokerGameState {
   }
 
   advanceStreet(state);
-  if (state.players.filter((player) => player.status !== "folded" && player.status !== "all-in").length === 0) {
-    dealCommunityToShowdown(state);
-    return finishByShowdown(state);
+  if (shouldResolveWithoutFurtherBetting(state)) {
+    return beginRunoutOrShowdown(state);
   }
   state.currentTurnUserId = nextActionUserId(
     state,
     nextOccupiedSeat(state.buttonSeatIndex, occupiedSeats(state)),
   );
+  return state;
+}
+
+function shouldResolveWithoutFurtherBetting(state: PokerGameState): boolean {
+  const remaining = state.players.filter((player) => player.status !== "folded");
+  const actionable = remaining.filter((player) => player.status !== "all-in" && player.stack > 0);
+  return remaining.length > 1 && remaining.some((player) => player.status === "all-in") && actionable.length <= 1;
+}
+
+function beginRunoutOrShowdown(state: PokerGameState): PokerGameState {
+  if (state.communityCards.length >= 5) {
+    return finishByShowdown(state);
+  }
+
+  const eligiblePlayerIds = state.players
+    .filter((player) => player.status !== "folded")
+    .map((player) => player.userId);
+  state.phase = "runout";
+  state.currentTurnUserId = undefined;
+  delete state.actionClock;
+  state.runoutSelection = {
+    eligiblePlayerIds,
+    votes: {},
+    remainingCards: 5 - state.communityCards.length,
+    startedAt: new Date().toISOString(),
+  };
+  log(state, undefined, "runout-selection");
   return state;
 }
 
@@ -352,37 +463,136 @@ function finishByFold(state: PokerGameState, winnerId: string): PokerGameState {
   state.awards = [{ potId: "pot-1", amount: potAmount, winnerIds: [winnerId] }];
   state.phase = "finished";
   state.currentTurnUserId = undefined;
+  delete state.runoutSelection;
+  delete state.runoutMode;
+  delete state.runoutBoards;
+  delete state.runoutPlan;
   log(state, winnerId, "win-by-fold", potAmount);
   return state;
 }
 
 function finishByShowdown(state: PokerGameState): PokerGameState {
-  dealCommunityToShowdown(state);
-  const participants = state.players.map((player) => {
-    const hand =
-      player.status !== "folded"
-        ? evaluateSevenCards([...player.holeCards, ...state.communityCards])
-        : undefined;
-    if (hand) {
-      state.showdownEvaluations[player.userId] = hand;
+  return startRunoutReveal(state, "once");
+}
+
+function startRunoutReveal(state: PokerGameState, mode: RunoutMode): PokerGameState {
+  const boardCount = mode === "twice" ? 2 : 1;
+  const baseCommunityCards = state.communityCards.map((card) => ({ ...card }));
+  let deck = state.deck;
+  const runoutPlan: RunoutPlan[] = [];
+  const runoutBoards: RunoutBoard[] = [];
+
+  for (let boardIndex = 0; boardIndex < boardCount; boardIndex += 1) {
+    const boardId = `board-${boardIndex + 1}`;
+    const dealt = dealBoardRunout(deck, baseCommunityCards);
+    deck = dealt.deck;
+    runoutPlan.push({ id: boardId, cards: dealt.cards.map((card) => ({ ...card })) });
+    runoutBoards.push({
+      id: boardId,
+      cards: baseCommunityCards.map((card) => ({ ...card })),
+      awards: [],
+      payouts: Object.fromEntries(state.players.map((player) => [player.userId, 0])),
+      showdownEvaluations: {},
+      equities: [],
+      isComplete: baseCommunityCards.length >= 5,
+    });
+  }
+
+  state.deck = deck;
+  state.sidePots = buildSidePots(getPotParticipants(state));
+  state.runoutMode = mode;
+  state.runoutPlan = runoutPlan;
+  state.runoutBoards = runoutBoards;
+  state.communityCards = runoutBoards[0]?.cards.map((card) => ({ ...card })) ?? baseCommunityCards;
+  state.currentTurnUserId = undefined;
+  delete state.actionClock;
+  delete state.runoutSelection;
+
+  if (baseCommunityCards.length >= 5) {
+    return finalizeRunout(state);
+  }
+
+  state.phase = "revealing";
+  updateRunoutEquities(state);
+  log(state, undefined, mode === "twice" ? "runout-reveal-twice" : "runout-reveal-once");
+  return state;
+}
+
+function finalizeRunout(state: PokerGameState): PokerGameState {
+  const runoutBoards = state.runoutBoards?.length
+    ? state.runoutBoards
+    : [
+        {
+          id: "board-1",
+          cards: state.communityCards.map((card) => ({ ...card })),
+          awards: [],
+          payouts: Object.fromEntries(state.players.map((player) => [player.userId, 0])),
+          showdownEvaluations: {},
+          equities: [],
+          isComplete: true,
+        },
+      ];
+  const boardCount = runoutBoards.length;
+  const baseParticipants = getPotParticipants(state);
+  const sidePots = state.sidePots.length > 0 ? state.sidePots : buildSidePots(baseParticipants);
+  const totalPayouts: Record<string, number> = Object.fromEntries(state.players.map((player) => [player.userId, 0]));
+  const flattenedAwards: PotAward[] = [];
+
+  for (let boardIndex = 0; boardIndex < boardCount; boardIndex += 1) {
+    const board = runoutBoards[boardIndex]!;
+    const plan = state.runoutPlan?.find((item) => item.id === board.id);
+    const completeCards = (plan?.cards ?? board.cards).slice(0, 5).map((card) => ({ ...card }));
+    board.cards = completeCards;
+    board.isComplete = true;
+
+    const showdownEvaluations: Record<string, HandEvaluation> = Object.fromEntries(
+      state.players
+        .filter((player) => player.status !== "folded")
+        .map((player) => [player.userId, evaluateSevenCards([...player.holeCards, ...completeCards])]),
+    );
+    const participants = baseParticipants.map((player) => ({
+      ...player,
+      hand: player.folded ? undefined : showdownEvaluations[player.userId],
+    }));
+    const boardPots = sidePots
+      .map((pot) => ({
+        ...pot,
+        amount: splitAmountForBoard(pot.amount, boardIndex, boardCount),
+      }))
+      .filter((pot) => pot.amount > 0);
+    const { awards, payouts } = awardSidePots(boardPots, participants, state.buttonSeatIndex);
+    const boardAwards = awards.map((award) => ({ ...award, boardId: board.id }));
+
+    for (const player of state.players) {
+      totalPayouts[player.userId] = (totalPayouts[player.userId] ?? 0) + (payouts[player.userId] ?? 0);
     }
-    return {
-      userId: player.userId,
-      committed: player.totalCommitted,
-      folded: player.status === "folded",
-      seatIndex: player.seatIndex,
-      hand,
-    };
-  });
-  state.sidePots = buildSidePots(participants);
-  const { awards, payouts } = awardSidePots(state.sidePots, participants, state.buttonSeatIndex);
-  state.awards = awards;
+    flattenedAwards.push(
+      ...boardAwards.map((award) => ({
+        ...award,
+        potId: `${board.id}:${award.potId}`,
+      })),
+    );
+    board.awards = boardAwards;
+    board.payouts = payouts;
+    board.showdownEvaluations = showdownEvaluations;
+    board.equities = finalEquitiesForBoard(state, completeCards);
+  }
+
+  state.communityCards = runoutBoards[0]?.cards.map((card) => ({ ...card })) ?? state.communityCards;
+  state.sidePots = sidePots;
+  state.awards = flattenedAwards;
+  state.showdownEvaluations = runoutBoards[0]?.showdownEvaluations ?? {};
+  state.runoutBoards = runoutBoards;
+  delete state.runoutSelection;
+  delete state.runoutPlan;
+
   for (const player of state.players) {
-    player.stack += payouts[player.userId] ?? 0;
+    player.stack += totalPayouts[player.userId] ?? 0;
   }
   state.phase = "finished";
   state.currentTurnUserId = undefined;
-  log(state, undefined, "showdown");
+  delete state.actionClock;
+  log(state, undefined, state.runoutMode === "twice" ? "showdown-run-twice" : "showdown");
   return state;
 }
 
@@ -418,6 +628,30 @@ function postBlind(
   log(state, player.userId, action, amount);
 }
 
+function postAntes(state: PokerGameState, amount: number): void {
+  const ante = Math.max(0, Math.floor(amount));
+  if (ante === 0) {
+    return;
+  }
+  for (const player of state.players) {
+    const committed = commitAnte(player, ante);
+    if (committed > 0) {
+      log(state, player.userId, "post-ante", committed);
+    }
+  }
+}
+
+function commitAnte(player: EnginePlayer, amount: number): number {
+  const committed = Math.min(player.stack, Math.max(0, Math.floor(amount)));
+  player.stack -= committed;
+  player.totalCommitted += committed;
+  if (player.stack === 0) {
+    player.status = "all-in";
+    player.actedThisStreet = true;
+  }
+  return committed;
+}
+
 function commitChips(player: EnginePlayer, amount: number): number {
   const committed = Math.min(player.stack, Math.max(0, Math.floor(amount)));
   player.stack -= committed;
@@ -447,17 +681,173 @@ function burnAndDeal(state: PokerGameState, count: number): void {
   }
 }
 
-function dealCommunityToShowdown(state: PokerGameState): void {
-  while (state.communityCards.length < 5) {
-    burnAndDeal(state, state.communityCards.length < 3 ? 3 : 1);
-    if (state.communityCards.length === 3) {
-      state.phase = "flop";
-    } else if (state.communityCards.length === 4) {
-      state.phase = "turn";
-    } else if (state.communityCards.length === 5) {
-      state.phase = "river";
+function dealBoardRunout(deck: Card[], baseCommunityCards: Card[]): { cards: Card[]; deck: Card[] } {
+  let nextDeck = deck;
+  const cards = baseCommunityCards.map((card) => ({ ...card }));
+  while (cards.length < 5) {
+    const count = cards.length < 3 ? 3 : 1;
+    const burn = dealOne(nextDeck);
+    nextDeck = burn.deck;
+    for (let i = 0; i < count; i += 1) {
+      const result = dealOne(nextDeck);
+      cards.push(result.card);
+      nextDeck = result.deck;
     }
   }
+  return { cards, deck: nextDeck };
+}
+
+function getPotParticipants(state: PokerGameState): Array<{
+  userId: string;
+  committed: number;
+  folded: boolean;
+  seatIndex: number;
+}> {
+  return state.players.map((player) => ({
+    userId: player.userId,
+    committed: player.totalCommitted,
+    folded: player.status === "folded",
+    seatIndex: player.seatIndex,
+  }));
+}
+
+function updateRunoutEquities(state: PokerGameState): void {
+  for (const board of state.runoutBoards ?? []) {
+    board.isComplete = board.cards.length >= 5;
+    board.equities = calculateRunoutEquities(state, board.cards);
+  }
+}
+
+function finalEquitiesForBoard(state: PokerGameState, boardCards: Card[]): RunoutEquity[] {
+  return calculateRunoutEquities(state, boardCards.slice(0, 5));
+}
+
+function calculateRunoutEquities(state: PokerGameState, boardCards: Card[]): RunoutEquity[] {
+  const players = state.players.filter((player) => player.status !== "folded" && player.holeCards.length === 2);
+  if (players.length === 0) {
+    return [];
+  }
+
+  const missingCards = Math.max(0, 5 - boardCards.length);
+  const counters: Record<string, { wins: number; ties: number }> = Object.fromEntries(
+    players.map((player) => [player.userId, { wins: 0, ties: 0 }]),
+  );
+  let samples = 0;
+  const score = (completion: Card[]) => {
+    samples += 1;
+    const completeBoard = [...boardCards, ...completion];
+    const evaluations = players.map((player) => ({
+      userId: player.userId,
+      hand: evaluateSevenCards([...player.holeCards, ...completeBoard]),
+    }));
+    let winners = [evaluations[0]!];
+    for (const evaluation of evaluations.slice(1)) {
+      const comparison = compareEvaluations(evaluation.hand, winners[0]!.hand);
+      if (comparison > 0) {
+        winners = [evaluation];
+      } else if (comparison === 0) {
+        winners.push(evaluation);
+      }
+    }
+    for (const winner of winners) {
+      if (winners.length === 1) {
+        counters[winner.userId]!.wins += 1;
+      } else {
+        counters[winner.userId]!.ties += 1;
+      }
+    }
+  };
+
+  if (missingCards === 0) {
+    score([]);
+  } else {
+    const deadCards = new Set(
+      [...boardCards, ...players.flatMap((player) => player.holeCards)].map((card) => cardKey(card)),
+    );
+    const unknownCards = createDeck().filter((card) => !deadCards.has(cardKey(card)));
+    const exactCount = combinationCount(unknownCards.length, missingCards);
+    if (exactCount <= 2500) {
+      visitCombinations(unknownCards, missingCards, score);
+    } else {
+      const sampleCount = 2000;
+      const random = seededRandom(`${state.handId}:${boardCards.map(cardKey).join(",")}:${missingCards}`);
+      for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1) {
+        score(sampleDistinctCards(unknownCards, missingCards, random));
+      }
+    }
+  }
+
+  return players.map((player) => ({
+    userId: player.userId,
+    winPercent: roundPercent((counters[player.userId]!.wins / samples) * 100),
+    tiePercent: roundPercent((counters[player.userId]!.ties / samples) * 100),
+    samples,
+  }));
+}
+
+function visitCombinations(cards: Card[], count: number, callback: (combo: Card[]) => void): void {
+  const combo: Card[] = [];
+  const visit = (startIndex: number) => {
+    if (combo.length === count) {
+      callback(combo.map((card) => ({ ...card })));
+      return;
+    }
+    const remaining = count - combo.length;
+    for (let index = startIndex; index <= cards.length - remaining; index += 1) {
+      combo.push(cards[index]!);
+      visit(index + 1);
+      combo.pop();
+    }
+  };
+  visit(0);
+}
+
+function sampleDistinctCards(cards: Card[], count: number, random: () => number): Card[] {
+  const pool = cards.map((card) => ({ ...card }));
+  for (let index = 0; index < count; index += 1) {
+    const swapIndex = index + Math.floor(random() * (pool.length - index));
+    [pool[index], pool[swapIndex]] = [pool[swapIndex]!, pool[index]!];
+  }
+  return pool.slice(0, count);
+}
+
+function combinationCount(total: number, count: number): number {
+  if (count < 0 || count > total) {
+    return 0;
+  }
+  let result = 1;
+  const normalizedCount = Math.min(count, total - count);
+  for (let index = 1; index <= normalizedCount; index += 1) {
+    result = (result * (total - normalizedCount + index)) / index;
+  }
+  return result;
+}
+
+function seededRandom(seed: string): () => number {
+  let hash = 2166136261;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash ^= seed.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return () => {
+    hash += 0x6d2b79f5;
+    let mixed = hash;
+    mixed = Math.imul(mixed ^ (mixed >>> 15), mixed | 1);
+    mixed ^= mixed + Math.imul(mixed ^ (mixed >>> 7), mixed | 61);
+    return ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function roundPercent(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+function cardKey(card: Card): string {
+  return `${card.rank}${card.suit}`;
+}
+
+function splitAmountForBoard(amount: number, boardIndex: number, boardCount: number): number {
+  return Math.floor(amount / boardCount) + (boardIndex < amount % boardCount ? 1 : 0);
 }
 
 function orderedFrom<T extends { seatIndex: number }>(seatIndex: number, players: T[]): T[] {
@@ -513,6 +903,28 @@ function cloneState(state: PokerGameState): PokerGameState {
     sidePots: state.sidePots.map((pot) => ({ ...pot })),
     awards: state.awards.map((award) => ({ ...award })),
     showdownEvaluations: { ...state.showdownEvaluations },
+    actionClock: state.actionClock ? { ...state.actionClock } : undefined,
+    runoutSelection: state.runoutSelection
+      ? {
+          ...state.runoutSelection,
+          votes: { ...state.runoutSelection.votes },
+          eligiblePlayerIds: [...state.runoutSelection.eligiblePlayerIds],
+        }
+      : undefined,
+    runoutMode: state.runoutMode,
+    runoutBoards: state.runoutBoards?.map((board) => ({
+      ...board,
+      cards: board.cards.map((card) => ({ ...card })),
+      awards: board.awards.map((award) => ({ ...award })),
+      payouts: { ...board.payouts },
+      showdownEvaluations: { ...board.showdownEvaluations },
+      equities: board.equities?.map((equity) => ({ ...equity })),
+      isComplete: board.isComplete,
+    })),
+    runoutPlan: state.runoutPlan?.map((plan) => ({
+      id: plan.id,
+      cards: plan.cards.map((card) => ({ ...card })),
+    })),
   };
 }
 

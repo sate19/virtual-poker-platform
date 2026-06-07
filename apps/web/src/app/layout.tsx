@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { AppNav } from "./components/AppNav";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -16,13 +17,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <Link className="brand" href="/">
               虚拟筹码德州扑克平台
             </Link>
-            <nav className="nav">
-              <Link href="/rooms">房间</Link>
-              <Link href="/rooms/new">创建房间</Link>
-              <Link href="/profile">统计</Link>
-              <Link href="/admin">管理员</Link>
-              <Link href="/login">登录</Link>
-            </nav>
+            <AppNav />
           </header>
           {children}
         </div>

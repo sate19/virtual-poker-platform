@@ -72,6 +72,7 @@ export async function requireAdmin(request: FastifyRequest, reply: FastifyReply)
   const user = (request as FastifyRequest & { user?: AuthUser }).user;
   if (!user || user.role !== "ADMIN") {
     reply.code(403).send({ code: "FORBIDDEN", message: "需要管理员权限" });
+    return;
   }
 }
 

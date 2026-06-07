@@ -47,7 +47,7 @@ export default function RoomsPage() {
       <div className="error">{error}</div>
       <div className="grid">
         {rooms.map((room) => (
-          <Link className="card" href={`/table/${room.id}`} key={room.id}>
+          <Link className="card roomCard" href={`/table/${room.id}`} key={room.id}>
             <h2>{room.name}</h2>
             <div className="statRow">
               <span className="muted">状态</span>
@@ -63,7 +63,16 @@ export default function RoomsPage() {
               <span className="muted">盲注</span>
               <strong>
                 {room.smallBlind}/{room.bigBlind}
+                {room.ante > 0 ? ` / 前注 ${room.ante}` : ""}
               </strong>
+            </div>
+            <div className="statRow">
+              <span className="muted">开局人数</span>
+              <strong>{room.minPlayersToStart}+</strong>
+            </div>
+            <div className="statRow">
+              <span className="muted">行动时间</span>
+              <strong>{room.actionTimeoutSeconds} 秒</strong>
             </div>
             <div className="statRow">
               <span className="muted">观战</span>

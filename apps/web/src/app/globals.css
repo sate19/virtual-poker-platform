@@ -1,15 +1,21 @@
 :root {
-  --bg: #101415;
-  --panel: #1c2324;
-  --panel-soft: #253031;
-  --table: #22664c;
-  --table-edge: #12372e;
-  --text: #edf4ef;
-  --muted: #9fb0aa;
-  --line: #334241;
-  --accent: #f0b84b;
-  --danger: #e35d5d;
-  --ok: #5ac186;
+  --bg: #1f2020;
+  --stage: #242424;
+  --panel: rgba(39, 39, 39, 0.9);
+  --panel-solid: #2d2d2d;
+  --panel-soft: #3a3a3a;
+  --line: rgba(255, 255, 255, 0.12);
+  --line-strong: rgba(255, 255, 255, 0.22);
+  --felt: #168a50;
+  --felt-light: #22b86c;
+  --felt-dark: #09523b;
+  --rail: #101111;
+  --text: #f3f3f1;
+  --muted: #a5a5a0;
+  --accent: #f4cf39;
+  --green: #2fd475;
+  --danger: #e34e3d;
+  --blue: #78a5ff;
 }
 
 * {
@@ -20,7 +26,10 @@ html,
 body {
   margin: 0;
   min-height: 100%;
-  background: var(--bg);
+  background:
+    radial-gradient(circle at 50% 28%, rgba(255, 255, 255, 0.05), transparent 34%),
+    radial-gradient(circle at 50% 78%, rgba(0, 0, 0, 0.42), transparent 44%),
+    var(--bg);
   color: var(--text);
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei",
@@ -37,11 +46,17 @@ input,
 select,
 textarea {
   font: inherit;
+  min-width: 0;
 }
 
 button {
   border: 0;
   cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.38;
 }
 
 .appShell {
@@ -51,33 +66,57 @@ button {
 }
 
 .topbar {
-  height: 60px;
+  height: 36px;
   display: flex;
-  align-items: center;
+  align-items: stretch;
   justify-content: space-between;
-  padding: 0 28px;
-  border-bottom: 1px solid var(--line);
-  background: rgba(16, 20, 21, 0.92);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.65);
+  background: #2b2b2c;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.05) inset;
   position: sticky;
   top: 0;
-  z-index: 10;
+  z-index: 30;
 }
 
 .brand {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 14px;
+  background: #202020;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  color: #f4f4f4;
+  font-size: 13px;
   font-weight: 800;
+  letter-spacing: 0;
+}
+
+.brand::after {
+  content: "+";
+  margin-left: 7px;
   color: var(--accent);
+  font-size: 23px;
+  line-height: 1;
 }
 
 .nav {
   display: flex;
+  align-items: stretch;
+  margin-left: auto;
+  color: #c5c5c0;
+  font-size: 12px;
+}
+
+.nav a {
+  display: inline-flex;
   align-items: center;
-  gap: 16px;
-  color: var(--muted);
-  font-size: 14px;
+  padding: 0 14px;
+  border-left: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .nav a:hover {
-  color: var(--text);
+  color: #fff;
+  background: rgba(255, 255, 255, 0.09);
 }
 
 .page {
@@ -90,22 +129,30 @@ button {
   width: min(1440px, calc(100vw - 20px));
 }
 
+.tablePage {
+  width: 100%;
+  max-width: none;
+  min-height: calc(100vh - 36px);
+  padding: 8px 12px 0;
+}
+
 .hero {
-  min-height: calc(100vh - 140px);
+  min-height: calc(100vh - 120px);
   display: grid;
   align-items: center;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 0.9fr 1.1fr;
   gap: 44px;
 }
 
 .hero h1 {
-  font-size: 52px;
-  line-height: 1.04;
+  font-size: 48px;
+  line-height: 1.05;
   margin: 0 0 18px;
   letter-spacing: 0;
 }
 
 .hero p {
+  max-width: 620px;
   color: var(--muted);
   font-size: 17px;
   line-height: 1.8;
@@ -116,10 +163,12 @@ button {
   min-height: 410px;
   border-radius: 50%;
   background:
-    radial-gradient(circle at center, rgba(255, 255, 255, 0.08), transparent 36%),
-    linear-gradient(135deg, #2a7a58, #174f42);
-  border: 18px solid #222b2a;
-  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.42);
+    radial-gradient(ellipse at center, rgba(255, 255, 255, 0.1), transparent 40%),
+    linear-gradient(145deg, var(--felt-light), var(--felt-dark));
+  border: 22px solid var(--rail);
+  box-shadow:
+    0 36px 85px rgba(0, 0, 0, 0.48),
+    inset 0 0 0 10px rgba(255, 255, 255, 0.04);
   position: relative;
 }
 
@@ -128,23 +177,26 @@ button {
   content: "";
   position: absolute;
   width: 64px;
-  height: 88px;
+  height: 90px;
   border-radius: 8px;
-  background: #f6faf6;
-  top: 45%;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.25), transparent 44%),
+    repeating-linear-gradient(135deg, #d65b5b, #d65b5b 6px, #cf5050 6px, #cf5050 12px);
+  border: 4px solid #f7f4ef;
+  top: 43%;
   left: 45%;
-  transform: rotate(-8deg);
+  transform: rotate(-7deg);
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.3);
 }
 
 .heroTable::after {
   left: 53%;
-  transform: rotate(9deg);
-  background: #fff8ee;
+  transform: rotate(8deg);
 }
 
 .actions {
   display: flex;
-  gap: 12px;
+  gap: 10px;
   flex-wrap: wrap;
 }
 
@@ -153,28 +205,48 @@ button {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 40px;
+  min-height: 38px;
   padding: 0 16px;
-  border-radius: 8px;
-  background: var(--panel-soft);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.06);
   color: var(--text);
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-strong);
+  min-width: 0;
+  white-space: nowrap;
+  transition:
+    background 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease,
+    transform 140ms ease;
 }
 
-.btn:hover {
-  border-color: var(--accent);
+.btn:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.34);
+  background: rgba(255, 255, 255, 0.11);
 }
 
 .btnPrimary {
-  background: var(--accent);
-  color: #201805;
-  border-color: var(--accent);
-  font-weight: 700;
+  background: rgba(47, 212, 117, 0.14);
+  color: #c7ffd8;
+  border-color: rgba(47, 212, 117, 0.55);
+  font-weight: 800;
+}
+
+.btnPrimary:hover:not(:disabled) {
+  background: rgba(47, 212, 117, 0.24);
+  border-color: rgba(47, 212, 117, 0.8);
 }
 
 .btnDanger {
-  background: #4a2222;
-  border-color: #743333;
+  background: rgba(227, 78, 61, 0.12);
+  color: #ffb1a8;
+  border-color: rgba(227, 78, 61, 0.58);
+  font-weight: 800;
+}
+
+.btnDanger:hover:not(:disabled) {
+  background: rgba(227, 78, 61, 0.22);
+  border-color: rgba(227, 78, 61, 0.85);
 }
 
 .grid {
@@ -186,8 +258,36 @@ button {
 .card {
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 6px;
   padding: 18px;
+  box-shadow:
+    0 16px 34px rgba(0, 0, 0, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(12px);
+  min-width: 0;
+}
+
+.roomCard {
+  min-height: 220px;
+  position: relative;
+  overflow: hidden;
+}
+
+.roomCard::before {
+  content: "";
+  position: absolute;
+  inset: 16px 18px auto auto;
+  width: 86px;
+  height: 48px;
+  border-radius: 50%;
+  background: linear-gradient(145deg, var(--felt-light), var(--felt-dark));
+  border: 7px solid #151515;
+  opacity: 0.78;
+}
+
+.roomCard h2 {
+  margin-top: 0;
+  padding-right: 110px;
 }
 
 .sectionTitle {
@@ -201,6 +301,10 @@ button {
 .sectionTitle h1,
 .sectionTitle h2 {
   margin: 0;
+}
+
+.sectionTitle p {
+  margin: 6px 0 0;
 }
 
 .muted {
@@ -228,12 +332,20 @@ button {
 .textarea,
 .select {
   width: 100%;
-  min-height: 42px;
-  border-radius: 8px;
-  border: 1px solid var(--line);
-  background: #121718;
+  min-height: 40px;
+  border-radius: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(12, 12, 12, 0.64);
   color: var(--text);
   padding: 0 12px;
+  outline: none;
+}
+
+.input:focus,
+.textarea:focus,
+.select:focus {
+  border-color: rgba(47, 212, 117, 0.7);
+  box-shadow: 0 0 0 2px rgba(47, 212, 117, 0.12);
 }
 
 .textarea {
@@ -243,7 +355,7 @@ button {
 }
 
 .error {
-  color: #ff9a9a;
+  color: #ffaaa1;
   min-height: 22px;
 }
 
@@ -253,7 +365,7 @@ button {
   justify-content: space-between;
   gap: 14px;
   padding: 10px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .statRow:last-child,
@@ -261,90 +373,302 @@ button {
   border-bottom: 0;
 }
 
+.tableHeader {
+  min-height: 42px;
+  margin-bottom: 4px;
+  padding: 0 6px;
+  position: relative;
+  z-index: 4;
+}
+
+.tableHeader h1 {
+  font-size: 18px;
+  line-height: 1.2;
+}
+
+.tableHeader p {
+  font-size: 12px;
+}
+
+.tableHeader .select {
+  width: 150px;
+}
+
+.tableHeader .input {
+  width: 130px;
+}
+
 .tableLayout {
+  min-height: calc(100vh - 92px);
+  position: relative;
   display: grid;
-  grid-template-columns: 1fr 320px;
-  gap: 16px;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 12px;
+  align-items: start;
 }
 
 .tableArea {
-  min-height: calc(100vh - 128px);
+  min-height: calc(100vh - 92px);
   display: grid;
-  align-content: center;
-  gap: 16px;
+  align-content: start;
+  justify-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 14px 12px 28px 78px;
+  position: relative;
+}
+
+.tableRail {
+  position: fixed;
+  left: 12px;
+  top: 116px;
+  z-index: 9;
+  display: grid;
+  gap: 8px;
+}
+
+.iconButton {
+  width: 58px;
+  height: 58px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 5px;
+  background: rgba(33, 33, 33, 0.78);
+  color: rgba(255, 255, 255, 0.58);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.iconButton:hover {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.26);
+  background: rgba(48, 48, 48, 0.86);
 }
 
 .pokerTable {
   position: relative;
-  width: 100%;
-  aspect-ratio: 16 / 9;
-  min-height: 540px;
-  border-radius: 48%;
+  width: min(940px, 100%);
+  aspect-ratio: 2 / 1;
+  min-width: 700px;
+  min-height: 500px;
+  border-radius: 50%;
   background:
-    radial-gradient(circle at center, rgba(255, 255, 255, 0.08), transparent 40%),
-    linear-gradient(140deg, var(--table), #1b5848);
-  border: 18px solid var(--table-edge);
+    radial-gradient(ellipse at center, rgba(255, 255, 255, 0.16), transparent 39%),
+    radial-gradient(ellipse at center, rgba(255, 255, 255, 0.06) 0 58%, transparent 59%),
+    linear-gradient(160deg, #1fb869, #12814f 50%, #0f6c48);
+  border: 24px solid var(--rail);
   box-shadow:
-    inset 0 0 0 2px rgba(255, 255, 255, 0.06),
-    0 28px 70px rgba(0, 0, 0, 0.35);
+    0 34px 70px rgba(0, 0, 0, 0.58),
+    0 0 0 10px rgba(0, 0, 0, 0.18),
+    inset 0 0 0 12px rgba(255, 255, 255, 0.035),
+    inset 0 -34px 60px rgba(0, 0, 0, 0.16);
+}
+
+.tableCornerMeta {
+  position: absolute;
+  right: -120px;
+  top: -88px;
+  display: grid;
+  gap: 2px;
+  color: rgba(255, 255, 255, 0.42);
+  text-align: right;
+  font-size: 14px;
+  letter-spacing: 0;
+}
+
+.tableCornerMeta strong {
+  color: rgba(255, 255, 255, 0.66);
+  font-size: 26px;
 }
 
 .centerPot {
   position: absolute;
-  inset: 36% 28%;
+  inset: 29% 22%;
   display: grid;
   align-content: center;
   justify-items: center;
-  gap: 12px;
+  gap: 14px;
+  z-index: 3;
+}
+
+.potPill,
+.turnPill,
+.timerPill {
+  min-width: 132px;
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 22px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.22);
+  color: #f8fff8;
+  font-size: 25px;
+  font-weight: 900;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.turnPill {
+  min-height: 28px;
+  font-size: 13px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.74);
+  background: rgba(0, 0, 0, 0.16);
+}
+
+.timerPill {
+  min-width: 72px;
+  min-height: 30px;
+  color: #101010;
+  background: rgba(244, 207, 57, 0.9);
+  font-size: 15px;
+  font-weight: 900;
+}
+
+.timerDanger {
+  color: #fff;
+  background: rgba(227, 78, 61, 0.92);
+}
+
+.revealBanner,
+.resultBanner {
+  max-width: min(520px, 100%);
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: rgba(15, 17, 17, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.84);
+  font-size: 13px;
+  font-weight: 850;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.resultBanner {
+  background: rgba(244, 207, 57, 0.16);
+  border-color: rgba(244, 207, 57, 0.38);
+  color: #fff2a8;
 }
 
 .community {
   display: flex;
+  justify-content: center;
+  gap: 10px;
+}
+
+.runoutBoards {
+  display: grid;
   gap: 8px;
+  justify-items: center;
+}
+
+.runoutBoard {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 10px;
+}
+
+.runoutLabel {
+  min-width: 54px;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+  font-weight: 800;
+  text-align: right;
 }
 
 .playingCard {
-  width: 52px;
-  height: 72px;
+  width: 74px;
+  height: 104px;
   border-radius: 8px;
-  background: #f8fbf7;
-  color: #111;
+  background: #f8f7f2;
+  color: #1f1f1f;
   display: grid;
   place-items: center;
-  font-weight: 800;
-  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.22);
+  font-size: 32px;
+  font-weight: 900;
+  box-shadow:
+    0 12px 28px rgba(0, 0, 0, 0.28),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.08);
+}
+
+.communityEmpty {
+  color: transparent;
+  background: rgba(0, 0, 0, 0.16);
+  border: 2px dashed rgba(255, 255, 255, 0.16);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 .cardBack {
-  color: #f4e4b8;
-  background: repeating-linear-gradient(45deg, #2f516c, #2f516c 6px, #244357 6px, #244357 12px);
+  color: transparent;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.24), transparent 44%),
+    repeating-linear-gradient(135deg, #d66565, #d66565 6px, #ca5757 6px, #ca5757 12px);
+  border: 4px solid #f4f1eb;
 }
 
 .redCard {
-  color: #c9222f;
+  color: #dc2f31;
 }
 
 .seat {
   position: absolute;
-  width: 160px;
-  min-height: 82px;
+  width: 250px;
+  min-height: 116px;
   transform: translate(-50%, -50%);
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(14, 20, 21, 0.92);
-  padding: 10px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(37, 37, 37, 0.82);
+  padding: 11px 12px 11px 104px;
   display: grid;
-  gap: 6px;
+  gap: 4px;
+  align-content: center;
+  z-index: 5;
+  box-shadow:
+    0 16px 40px rgba(0, 0, 0, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
 .seatActive {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(240, 184, 75, 0.2);
+  background: rgba(246, 246, 241, 0.96);
+  color: #151515;
+  border-color: rgba(255, 255, 255, 0.92);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.8),
+    0 0 52px rgba(255, 255, 255, 0.45),
+    0 18px 45px rgba(0, 0, 0, 0.42);
+}
+
+.seatActive::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 42%;
+  bottom: 0;
+  height: 5px;
+  border-radius: 0 0 0 7px;
+  background: #a9db55;
+}
+
+.seatSelf {
+  border-color: rgba(255, 255, 255, 0.24);
 }
 
 .seatEmpty {
-  opacity: 0.55;
+  width: 220px;
+  min-height: 54px;
+  padding: 10px;
+  place-items: center;
+  color: rgba(255, 255, 255, 0.42);
+  opacity: 0.78;
   border-style: dashed;
+  background: rgba(32, 32, 32, 0.48);
 }
 
 .seatName {
@@ -352,24 +676,183 @@ button {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  font-weight: 900;
+  font-size: 16px;
+}
+
+.seatName span:first-child,
+.seat .muted {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.seat .muted {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  line-height: 1.28;
+}
+
+.seatChipLine {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+.seatChipLine span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.winDelta {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: rgba(244, 207, 57, 0.18);
+  color: #ffe473;
+  border: 1px solid rgba(244, 207, 57, 0.42);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.seatActive .winDelta {
+  color: #806500;
+  background: rgba(244, 207, 57, 0.28);
+  border-color: rgba(128, 101, 0, 0.28);
+}
+
+.equityBadge {
+  width: fit-content;
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: rgba(120, 165, 255, 0.14);
+  color: #cdddff;
+  border: 1px solid rgba(120, 165, 255, 0.42);
+  font-size: 12px;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.seatActive .equityBadge {
+  color: #24437c;
+  background: rgba(120, 165, 255, 0.2);
+}
+
+.statusOnline,
+.statusOffline {
+  font-size: 11px;
   font-weight: 700;
+  color: #9fe475;
+}
+
+.statusOffline {
+  color: #ff9388;
 }
 
 .seatCards {
+  position: absolute;
+  left: 12px;
+  top: 14px;
   display: flex;
-  gap: 4px;
+  gap: 0;
+  filter: drop-shadow(0 8px 12px rgba(0, 0, 0, 0.34));
 }
 
 .miniCard {
-  width: 34px;
-  height: 44px;
-  border-radius: 6px;
-  background: #f8fbf7;
-  color: #111;
+  width: 46px;
+  height: 64px;
+  border-radius: 7px;
+  background: #f8f7f2;
+  color: #1f1f1f;
   display: grid;
   place-items: center;
-  font-size: 13px;
-  font-weight: 800;
+  font-size: 17px;
+  font-weight: 900;
+  border: 2px solid #f6f2eb;
+}
+
+.seatCards .miniCard:first-child {
+  transform: rotate(-7deg);
+}
+
+.seatCards .miniCard:last-child {
+  margin-left: -6px;
+  transform: rotate(7deg);
+}
+
+.seatMarkers {
+  position: absolute;
+  left: 22px;
+  bottom: -18px;
+  display: flex;
+  gap: 5px;
+}
+
+.seatTimer {
+  position: relative;
+  height: 12px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.seatTimer span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #f4cf39, #2fd475);
+  transition: width 180ms linear;
+}
+
+.seatTimer em {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 900;
+  line-height: 1;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+}
+
+.dealerChip,
+.blindChip {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: #f5f6fb;
+  color: #6187ed;
+  font-size: 14px;
+  font-weight: 900;
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.26);
+}
+
+.blindChip {
+  width: auto;
+  min-width: 34px;
+  padding: 0 8px;
+  border-radius: 999px;
+  color: #202020;
+  background: #f0d96b;
 }
 
 .controlBar {
@@ -380,8 +863,94 @@ button {
   gap: 10px;
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 7px;
   padding: 12px;
+}
+
+.actionDock {
+  position: static;
+  z-index: 10;
+  width: min(660px, 100%);
+  justify-self: end;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  gap: 12px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
+.actionClockBanner {
+  grid-column: 1 / -1;
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.35);
+  color: rgba(255, 255, 255, 0.76);
+  font-size: 13px;
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runoutPanel {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 60px;
+  padding: 10px 12px;
+  border: 1px solid rgba(244, 207, 57, 0.44);
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.runoutPanel > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.runoutActions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.runoutActions .btn {
+  min-height: 42px;
+}
+
+.actionDock .btn,
+.actionDock .input {
+  min-height: 58px;
+  border-radius: 7px;
+  background: rgba(31, 31, 31, 0.62);
+  font-size: 18px;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: none;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.actionDock .btnPrimary {
+  color: #bdffd3;
+  border-color: rgba(47, 212, 117, 0.58);
+}
+
+.actionDock .btnDanger {
+  color: #ff8c7f;
+  border-color: rgba(227, 78, 61, 0.6);
+}
+
+.betInput {
+  width: 100%;
+  text-align: center;
 }
 
 .sidePanel {
@@ -390,12 +959,43 @@ button {
   align-content: start;
 }
 
+.tableDrawer {
+  position: sticky;
+  top: 48px;
+  z-index: 6;
+  width: 100%;
+  grid-template-columns: 1fr;
+  align-items: stretch;
+}
+
+.tableDrawer .card {
+  padding: 10px;
+  background: rgba(37, 37, 37, 0.88);
+}
+
+.tableDrawer h2 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.tableInfoCard,
+.tableLogCard {
+  max-height: 128px;
+  overflow: auto;
+}
+
+.chatCard {
+  grid-row: span 2;
+}
+
 .chatLog {
-  height: 280px;
+  height: 82px;
   overflow: auto;
   display: grid;
   align-content: start;
   gap: 8px;
+  padding-right: 4px;
 }
 
 .chatLine {
@@ -403,16 +1003,67 @@ button {
   padding-bottom: 8px;
 }
 
+.chatLine div {
+  overflow-wrap: anywhere;
+}
+
+.chatCard form {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 .adminGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
   gap: 16px;
+}
+
+.adminGridWide {
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  margin-bottom: 16px;
+}
+
+.adminWideCard {
+  grid-column: span 2;
+}
+
+.metricCard {
+  display: grid;
+  gap: 8px;
+  min-height: 112px;
+}
+
+.metricCard strong {
+  font-size: 28px;
+}
+
+.accessPanel {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 16px;
+}
+
+.accessPanel h1 {
+  margin: 0 0 6px;
+}
+
+.accessPanel p {
+  margin: 0;
+}
+
+.tableScroller {
+  width: 100%;
+  overflow-x: auto;
 }
 
 .dataTable {
   width: 100%;
   border-collapse: collapse;
   font-size: 13px;
+  min-width: 680px;
 }
 
 .dataTable th,
@@ -423,9 +1074,79 @@ button {
   vertical-align: top;
 }
 
+.adminUserTable {
+  min-width: 780px;
+}
+
+.analyticsTable {
+  min-width: 920px;
+}
+
+.adminRoomTable {
+  min-width: 1120px;
+}
+
+.profitList {
+  display: grid;
+  gap: 4px;
+  min-width: 180px;
+}
+
+.profitRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.profitRow span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profitPositive {
+  color: #5ee5a6;
+}
+
+.profitNegative {
+  color: #ff8a8a;
+}
+
+.adminActionsCell {
+  width: 132px;
+  min-width: 132px;
+  white-space: nowrap;
+}
+
+.iconOnlyButton {
+  width: 36px;
+  min-width: 36px;
+  height: 34px;
+  min-height: 34px;
+  padding: 0;
+}
+
+@media (max-width: 1180px) {
+  .tableArea {
+    padding-right: 18px;
+    padding-left: 78px;
+  }
+
+  .pokerTable {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .tableCornerMeta {
+    right: 2px;
+    top: -72px;
+  }
+}
+
 @media (max-width: 960px) {
-  .hero,
-  .tableLayout {
+  .hero {
     grid-template-columns: 1fr;
   }
 
@@ -433,41 +1154,178 @@ button {
     font-size: 38px;
   }
 
-  .pokerTable {
-    min-height: 680px;
-    aspect-ratio: 3 / 4;
-    border-width: 12px;
+  .tableHeader {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
-  .seat {
-    width: 138px;
+  .tableArea {
+    min-height: 850px;
+    display: grid;
+    justify-items: center;
+    align-content: start;
+    padding: 18px 10px 330px;
+  }
+
+  .tableRail {
+    display: none;
+  }
+
+  .pokerTable {
+    width: 100%;
+    aspect-ratio: 3 / 4;
+    min-height: 660px;
+    border-width: 16px;
   }
 
   .centerPot {
-    inset: 40% 10%;
+    inset: 36% 9%;
+  }
+
+  .tableCornerMeta {
+    top: -60px;
+    right: 0;
+  }
+
+  .seat {
+    width: 178px;
+    min-height: 104px;
+    padding-left: 82px;
+    font-size: 12px;
+  }
+
+  .seatName {
+    font-size: 14px;
+  }
+
+  .miniCard {
+    width: 36px;
+    height: 50px;
+    font-size: 16px;
+  }
+
+  .playingCard {
+    width: 54px;
+    height: 76px;
+    font-size: 24px;
+  }
+
+  .actionDock,
+  .tableDrawer {
+    position: static;
+    width: 100%;
+    margin-top: 12px;
+  }
+
+  .actionDock {
+    grid-template-columns: repeat(2, minmax(130px, 1fr));
+  }
+
+  .tableLayout {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .tableDrawer {
+    grid-template-columns: 1fr;
+  }
+
+  .chatCard {
+    grid-row: auto;
   }
 }
 
 @media (max-width: 640px) {
   .topbar {
     height: auto;
-    align-items: flex-start;
+    align-items: stretch;
     flex-direction: column;
-    padding: 14px 16px;
-    gap: 10px;
+  }
+
+  .brand {
+    min-height: 36px;
   }
 
   .nav {
     flex-wrap: wrap;
   }
 
-  .playingCard {
-    width: 42px;
-    height: 58px;
+  .nav a {
+    min-height: 34px;
+    flex: 1 1 auto;
+    justify-content: center;
+  }
+
+  .page {
+    width: min(100vw - 20px, 1180px);
+    padding-top: 18px;
+  }
+
+  .tablePage {
+    width: 100%;
+    padding: 8px 8px 0;
+  }
+
+  .pokerTable {
+    min-height: 620px;
   }
 
   .seat {
-    width: 124px;
+    width: 142px;
+    min-height: 92px;
+    padding: 9px 8px 9px 62px;
+  }
+
+  .seatCards {
+    left: 7px;
+    top: 10px;
+  }
+
+  .miniCard {
+    width: 30px;
+    height: 42px;
+    font-size: 13px;
+  }
+
+  .seat .muted {
+    font-size: 11px;
+  }
+
+  .adminGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .adminWideCard {
+    grid-column: auto;
+  }
+
+  .accessPanel {
+    grid-template-columns: 1fr;
+  }
+
+  .playingCard {
+    width: 45px;
+    height: 62px;
+    font-size: 19px;
+  }
+
+  .potPill {
+    font-size: 20px;
+  }
+
+  .actionDock {
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .actionDock .btn,
+  .actionDock .input {
+    min-height: 52px;
+    font-size: 16px;
+  }
+
+  .actionClockBanner {
+    min-height: 26px;
     font-size: 12px;
   }
 }

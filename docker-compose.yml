@@ -1,6 +1,9 @@
+name: poker
+
 services:
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: poker
       POSTGRES_PASSWORD: poker
@@ -16,6 +19,7 @@ services:
       retries: 20
 
   server:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: apps/server/Dockerfile
@@ -25,6 +29,8 @@ services:
       WEB_ORIGIN: http://localhost:3000
       PORT: 4000
       SEED_ADMIN_PASSWORD: Admin12345!
+      ACTION_TIMEOUT_SECONDS: 30
+      OFFLINE_ROOM_CLOSE_GRACE_SECONDS: 30
     depends_on:
       postgres:
         condition: service_healthy
@@ -33,6 +39,7 @@ services:
     command: sh -c "pnpm prisma migrate deploy && pnpm prisma:seed && pnpm --filter @friends-poker/server start"
 
   web:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: apps/web/Dockerfile
@@ -47,3 +54,4 @@ services:
 
 volumes:
   postgres_data:
+    name: poker_postgres_data

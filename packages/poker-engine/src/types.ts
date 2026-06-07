@@ -39,9 +39,19 @@ export interface HandEvaluation {
   label: string;
 }
 
-export type GamePhase = "waiting" | "preflop" | "flop" | "turn" | "river" | "showdown" | "finished";
+export type GamePhase =
+  | "waiting"
+  | "preflop"
+  | "flop"
+  | "turn"
+  | "river"
+  | "showdown"
+  | "runout"
+  | "revealing"
+  | "finished";
 export type PlayerStatus = "seated" | "ready" | "active" | "folded" | "all-in" | "out";
 export type PokerActionType = "fold" | "check" | "call" | "bet" | "raise" | "all-in";
+export type RunoutMode = "once" | "twice";
 
 export interface EnginePlayer {
   userId: string;
@@ -71,6 +81,13 @@ export interface GameActionLogEntry {
   createdAt: string;
 }
 
+export interface ActionClockState {
+  userId: string;
+  startedAt: string;
+  deadlineAt: string;
+  timeoutSeconds: number;
+}
+
 export interface SidePot {
   id: string;
   amount: number;
@@ -84,6 +101,36 @@ export interface PotAward {
   amount: number;
   winnerIds: string[];
   oddChipWinnerId?: string;
+  boardId?: string;
+}
+
+export interface RunoutEquity {
+  userId: string;
+  winPercent: number;
+  tiePercent: number;
+  samples: number;
+}
+
+export interface RunoutSelection {
+  eligiblePlayerIds: string[];
+  votes: Record<string, RunoutMode>;
+  remainingCards: number;
+  startedAt: string;
+}
+
+export interface RunoutBoard {
+  id: string;
+  cards: Card[];
+  awards: PotAward[];
+  payouts: Record<string, number>;
+  showdownEvaluations: Record<string, HandEvaluation>;
+  equities?: RunoutEquity[];
+  isComplete?: boolean;
+}
+
+export interface RunoutPlan {
+  id: string;
+  cards: Card[];
 }
 
 export interface PokerGameState {
@@ -91,6 +138,7 @@ export interface PokerGameState {
   phase: GamePhase;
   smallBlind: number;
   bigBlind: number;
+  ante: number;
   buttonSeatIndex: number;
   smallBlindSeatIndex: number;
   bigBlindSeatIndex: number;
@@ -105,12 +153,18 @@ export interface PokerGameState {
   awards: PotAward[];
   showdownEvaluations: Record<string, HandEvaluation>;
   handNumber: number;
+  actionClock?: ActionClockState;
+  runoutSelection?: RunoutSelection;
+  runoutMode?: RunoutMode;
+  runoutBoards?: RunoutBoard[];
+  runoutPlan?: RunoutPlan[];
 }
 
 export interface PublicEnginePlayer {
   userId: string;
   displayName: string;
   seatIndex: number;
+  startingStack: number;
   stack: number;
   status: PlayerStatus;
   ready: boolean;
@@ -126,6 +180,7 @@ export interface PublicPokerGameState {
   phase: GamePhase;
   smallBlind: number;
   bigBlind: number;
+  ante: number;
   buttonSeatIndex: number;
   smallBlindSeatIndex: number;
   bigBlindSeatIndex: number;
@@ -139,4 +194,8 @@ export interface PublicPokerGameState {
   awards: PotAward[];
   showdownEvaluations: Record<string, HandEvaluation>;
   handNumber: number;
+  actionClock?: ActionClockState;
+  runoutSelection?: RunoutSelection;
+  runoutMode?: RunoutMode;
+  runoutBoards?: RunoutBoard[];
 }

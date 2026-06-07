@@ -3,6 +3,7 @@ export type UserRole = "USER" | "ADMIN";
 export type RoomStatus = "WAITING" | "PLAYING" | "FINISHED" | "CLOSED";
 
 export type GameActionType = "fold" | "check" | "call" | "bet" | "raise" | "all-in";
+export type RunoutMode = "once" | "twice";
 
 export interface AuthUser {
   id: string;
@@ -16,10 +17,14 @@ export interface AuthUser {
 export interface RoomSettingsDto {
   name: string;
   maxPlayers: number;
+  minPlayersToStart: number;
   smallBlind: number;
   bigBlind: number;
+  ante: number;
   minBuyIn: number;
   maxBuyIn: number;
+  actionTimeoutSeconds: number;
+  creatorOnlyStart: boolean;
   allowSpectators: boolean;
 }
 
@@ -30,8 +35,12 @@ export interface RoomSummaryDto {
   seatedCount: number;
   spectatorCount: number;
   maxPlayers: number;
+  minPlayersToStart: number;
   smallBlind: number;
   bigBlind: number;
+  ante: number;
+  actionTimeoutSeconds: number;
+  creatorOnlyStart: boolean;
   createdAt: string;
 }
 
@@ -64,6 +73,11 @@ export interface GameActionPayload {
   roomId: string;
   action: GameActionType;
   amount?: number;
+}
+
+export interface RunoutPayload {
+  roomId: string;
+  mode: RunoutMode;
 }
 
 export interface ChatSendPayload {
@@ -99,6 +113,7 @@ export interface ClientToServerEvents {
   "room:ready": (payload: ReadyPayload) => void;
   "game:start": (payload: StartGamePayload) => void;
   "game:action": (payload: GameActionPayload) => void;
+  "game:runout": (payload: RunoutPayload) => void;
   "chat:send": (payload: ChatSendPayload) => void;
   "state:request": (payload: JoinRoomPayload) => void;
 }
@@ -123,6 +138,7 @@ export const SOCKET_EVENTS = {
     "room:ready",
     "game:start",
     "game:action",
+    "game:runout",
     "chat:send",
     "state:request",
   ],

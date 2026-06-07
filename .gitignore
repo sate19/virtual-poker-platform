@@ -8,5 +8,8 @@ coverage
 .env.local
 .DS_Store
 *.log
+*.tsbuildinfo
 prisma/dev.db
 tmp
+backups
+!backups/.gitkeep

@@ -14,11 +14,18 @@ export const loginSchema = z.object({
 export const createRoomSchema = z.object({
   name: z.string().min(1).max(40),
   maxPlayers: z.number().int().min(2).max(9).default(9),
+  minPlayersToStart: z.number().int().min(2).max(9).default(2),
   smallBlind: z.number().int().min(1),
   bigBlind: z.number().int().min(2),
+  ante: z.number().int().min(0).max(1_000_000).default(0),
   minBuyIn: z.number().int().min(1),
   maxBuyIn: z.number().int().min(1),
+  actionTimeoutSeconds: z.number().int().min(5).max(300).default(30),
+  creatorOnlyStart: z.boolean().default(false),
   allowSpectators: z.boolean().default(true),
+}).refine((room) => room.minPlayersToStart <= room.maxPlayers, {
+  message: "开局人数不能大于最大人数",
+  path: ["minPlayersToStart"],
 });
 
 export const sitSchema = z.object({
@@ -34,6 +41,10 @@ export const readySchema = roomIdSchema.extend({ ready: z.boolean() });
 export const gameActionSchema = roomIdSchema.extend({
   action: z.enum(["fold", "check", "call", "bet", "raise", "all-in"]),
   amount: z.number().int().positive().optional(),
+});
+
+export const runoutSchema = roomIdSchema.extend({
+  mode: z.enum(["once", "twice"]),
 });
 
 export const chatSchema = roomIdSchema.extend({

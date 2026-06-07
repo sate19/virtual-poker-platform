@@ -5,6 +5,8 @@ import { config } from "./config";
 import { getUserFromToken, parseCookie } from "./auth";
 import {
   applyRuntimeAction,
+  attachRealtimeServer,
+  chooseRuntimeRunout,
   createRuntimeRoom,
   emitAllRoomLists,
   emitRoomState,
@@ -24,6 +26,7 @@ import {
   gameActionSchema,
   readySchema,
   roomIdSchema,
+  runoutSchema,
   sitSchema,
 } from "./validation";
 
@@ -34,6 +37,7 @@ export function registerSocket(app: FastifyInstance): Server<ClientToServerEvent
       credentials: true,
     },
   });
+  attachRealtimeServer(io);
 
   io.use(async (socket, next) => {
     const cookies = parseCookie(socket.handshake.headers.cookie);
@@ -122,6 +126,15 @@ export function registerSocket(app: FastifyInstance): Server<ClientToServerEvent
       await guarded(socket, async () => {
         const input = gameActionSchema.parse(payload);
         await applyRuntimeAction(input.roomId, user, { type: input.action, amount: input.amount });
+        await emitRoomState(io, input.roomId);
+        await emitAllRoomLists(io);
+      });
+    });
+
+    socket.on("game:runout", async (payload) => {
+      await guarded(socket, async () => {
+        const input = runoutSchema.parse(payload);
+        await chooseRuntimeRunout(input.roomId, user, input.mode);
         await emitRoomState(io, input.roomId);
         await emitAllRoomLists(io);
       });
