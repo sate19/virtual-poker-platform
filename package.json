@@ -5,7 +5,9 @@
   "description": "基于虚拟筹码的在线德州扑克平台",
   "packageManager": "pnpm@9.15.4",
   "scripts": {
-    "dev": "pnpm --parallel --filter @friends-poker/server --filter @friends-poker/web dev",
+    "dev": "node scripts/dev.mjs",
+    "dev:apps": "pnpm --parallel --filter @friends-poker/server --filter @friends-poker/web dev",
+    "dev:proxy": "node proxy.mjs",
     "build": "pnpm -r build",
     "lint": "pnpm -r lint",
     "test": "pnpm -r test",

@@ -2,8 +2,8 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { clearSessionCookie, hashPassword, requestUser, requireAdmin, requireUser, setSessionCookie, signSession, verifyPassword } from "./auth";
 import { prisma } from "./prisma";
-import { adjustChipsSchema, createRoomSchema, loginSchema, registerSchema } from "./validation";
-import { closeRuntimeRoom, createRuntimeRoom, getRuntimeRoom, getRuntimeRoomIfLoaded, listRooms } from "./roomStore";
+import { adjustChipsSchema, createRoomSchema, loginSchema, registerSchema, updateRoomSettingsSchema } from "./validation";
+import { addAIPlayersToRoom, closeRuntimeRoom, createRuntimeRoom, getRoomLedger, getRuntimeRoom, getRuntimeRoomIfLoaded, listRooms, removeAIPlayersFromRoom, updateRoomSettings } from "./roomStore";
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   app.get("/health", async () => ({ ok: true }));
@@ -63,6 +63,26 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
   app.get("/auth/me", { preHandler: requireUser }, async (request) => requestUser(request));
 
+  app.patch("/auth/me", { preHandler: requireUser }, async (request) => {
+    const user = requestUser(request);
+    const input = z.object({ displayName: z.string().min(1).max(24) }).parse(request.body);
+    await prisma.user.update({ where: { id: user.id }, data: { displayName: input.displayName } });
+    return { id: user.id, username: user.username, displayName: input.displayName, role: user.role, virtualChips: user.virtualChips };
+  });
+
+  app.post("/auth/me/buy-chips", { preHandler: requireUser }, async (request) => {
+    const user = requestUser(request);
+    const input = z.object({ amount: z.number().int().min(1).max(1000000) }).parse(request.body);
+    const updated = await prisma.user.update({
+      where: { id: user.id },
+      data: { virtualChips: { increment: input.amount } },
+    });
+    await prisma.virtualChipLedger.create({
+      data: { userId: user.id, delta: input.amount, reason: "PURCHASE", metadata: { note: "自助购码" } },
+    });
+    return { virtualChips: updated.virtualChips };
+  });
+
   app.get("/rooms", { preHandler: requireUser }, async () => listRooms());
 
   app.post("/rooms", { preHandler: requireUser }, async (request) => {
@@ -70,6 +90,31 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const input = createRoomSchema.parse(request.body);
     const room = await createRuntimeRoom(user, input);
     return { id: room.id };
+  });
+
+  app.patch("/rooms/:roomId/settings", { preHandler: requireUser }, async (request) => {
+    const user = requestUser(request);
+    const { roomId } = z.object({ roomId: z.string() }).parse(request.params);
+    const input = updateRoomSettingsSchema.parse({ ...request.body, roomId });
+    await updateRoomSettings(roomId, user, input);
+    return { ok: true };
+  });
+
+  app.post("/rooms/:roomId/ai-players", { preHandler: requireUser }, async (request) => {
+    const user = requestUser(request);
+    const { roomId } = z.object({ roomId: z.string() }).parse(request.params);
+    return addAIPlayersToRoom(roomId, user);
+  });
+
+  app.delete("/rooms/:roomId/ai-players", { preHandler: requireUser }, async (request) => {
+    const user = requestUser(request);
+    const { roomId } = z.object({ roomId: z.string() }).parse(request.params);
+    return removeAIPlayersFromRoom(roomId, user);
+  });
+
+  app.get("/rooms/:roomId/ledger", { preHandler: requireUser }, async (request) => {
+    const { roomId } = z.object({ roomId: z.string() }).parse(request.params);
+    return getRoomLedger(roomId);
   });
 
   app.get("/rooms/:roomId", { preHandler: requireUser }, async (request) => {

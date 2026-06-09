@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { Server } from "socket.io";
+import { z } from "zod";
 import type { ClientToServerEvents, ServerToClientEvents } from "@friends-poker/shared";
 import { config } from "./config";
 import { getUserFromToken, parseCookie } from "./auth";
@@ -11,8 +12,10 @@ import {
   emitAllRoomLists,
   emitRoomState,
   forgetSocket,
+  getRuntimeRoom,
   joinAsSpectator,
   leaveRoom,
+  rabbitHuntRoom,
   rememberSocket,
   addTableChips,
   removeTableChips,
@@ -35,6 +38,8 @@ import {
 
 export function registerSocket(app: FastifyInstance): Server<ClientToServerEvents, ServerToClientEvents> {
   const io = new Server<ClientToServerEvents, ServerToClientEvents>(app.server, {
+    pingTimeout: 60000,
+    pingInterval: 25000,
     cors: {
       origin: (_origin: string | undefined, cb: (err: Error | null, allow: boolean) => void) => {
         cb(null, true);
@@ -166,6 +171,7 @@ export function registerSocket(app: FastifyInstance): Server<ClientToServerEvent
     socket.on("chat:send", async (payload) => {
       await guarded(socket, async () => {
         const input = chatSchema.parse(payload);
+        if (!socket.rooms.has(input.roomId)) throw new Error("你不在该房间中");
         const message = await sendChatMessage(input.roomId, user, input.message);
         io.to(input.roomId).emit("chat:message", message);
       });
@@ -175,6 +181,43 @@ export function registerSocket(app: FastifyInstance): Server<ClientToServerEvent
       await guarded(socket, async () => {
         const { roomId } = roomIdSchema.parse(payload);
         await emitRoomState(io, roomId);
+      });
+    });
+
+    socket.on("player:reveal", async (payload) => {
+      await guarded(socket, async () => {
+        const { roomId } = roomIdSchema.parse(payload);
+        const room = getRuntimeRoom(roomId);
+        room.revealedPlayerIds.add(user.id);
+        await emitRoomState(io, roomId);
+      });
+    });
+
+    const emojiSchema = z.object({ roomId: z.string(), emoji: z.string() });
+
+    socket.on("emoji:set", async (payload) => {
+      await guarded(socket, async () => {
+        const { roomId, emoji } = emojiSchema.parse(payload);
+        const room = getRuntimeRoom(roomId);
+        const seat = room.seats.find((s) => s.userId === user.id);
+        if (!seat) throw new Error("只有已入座玩家可以设置表情");
+        seat.emoji = emoji || undefined;
+        await emitRoomState(io, roomId);
+      });
+    });
+
+    socket.on("emoji:throw", async (payload) => {
+      await guarded(socket, async () => {
+        const { roomId, toUserId, emoji } = emojiSchema.extend({ toUserId: z.string() }).parse(payload);
+        io.to(roomId).emit("emoji:throw", { fromUserId: user.id, toUserId, emoji, roomId });
+      });
+    });
+
+    socket.on("game:rabbit", async (payload) => {
+      await guarded(socket, async () => {
+        const { roomId } = roomIdSchema.parse(payload);
+        const result = rabbitHuntRoom(roomId, user);
+        io.to(roomId).emit("game:rabbit-cards", { cards: result.cards });
       });
     });
 

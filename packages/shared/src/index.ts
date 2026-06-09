@@ -26,6 +26,7 @@ export interface RoomSettingsDto {
   actionTimeoutSeconds: number;
   creatorOnlyStart: boolean;
   allowSpectators: boolean;
+  rabbitHunting: boolean;
 }
 
 export interface RoomSummaryDto {
@@ -109,6 +110,17 @@ export interface NotificationPayload {
   level?: "info" | "success" | "warning" | "error";
 }
 
+export interface EmojiPayload {
+  roomId: string;
+  emoji: string;
+}
+
+export interface EmojiThrowPayload {
+  roomId: string;
+  toUserId: string;
+  emoji: string;
+}
+
 export interface ClientToServerEvents {
   "room:join": (payload: JoinRoomPayload) => void;
   "room:leave": (payload: JoinRoomPayload) => void;
@@ -123,6 +135,10 @@ export interface ClientToServerEvents {
   "game:runout": (payload: RunoutPayload) => void;
   "chat:send": (payload: ChatSendPayload) => void;
   "state:request": (payload: JoinRoomPayload) => void;
+  "player:reveal": (payload: JoinRoomPayload) => void;
+  "emoji:set": (payload: EmojiPayload) => void;
+  "emoji:throw": (payload: EmojiThrowPayload) => void;
+  "game:rabbit": (payload: JoinRoomPayload) => void;
 }
 
 export interface ServerToClientEvents {
@@ -131,6 +147,9 @@ export interface ServerToClientEvents {
   "game:state": (state: unknown) => void;
   "game:event": (event: unknown) => void;
   "chat:message": (message: ChatMessageDto) => void;
+  "emoji:show": (payload: EmojiPayload & { userId: string }) => void;
+  "emoji:throw": (payload: EmojiThrowPayload & { fromUserId: string }) => void;
+  "game:rabbit-cards": (payload: { cards: any[] }) => void;
   error: (payload: ErrorPayload) => void;
   notification: (payload: NotificationPayload) => void;
 }
@@ -150,6 +169,8 @@ export const SOCKET_EVENTS = {
     "game:runout",
     "chat:send",
     "state:request",
+    "emoji:set",
+    "emoji:throw",
   ],
   server: [
     "room:list",
@@ -157,6 +178,8 @@ export const SOCKET_EVENTS = {
     "game:state",
     "game:event",
     "chat:message",
+    "emoji:show",
+    "emoji:throw",
     "error",
     "notification",
   ],

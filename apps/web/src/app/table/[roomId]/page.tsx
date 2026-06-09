@@ -3,7 +3,7 @@
 import { useParams } from "next/navigation";
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { io, type Socket } from "socket.io-client";
-import { CircleDollarSign, DoorOpen, Menu, NotebookText, Play, Send, UserRoundPlus, Volume2 } from "lucide-react";
+import { Bot, CircleDollarSign, DoorOpen, Menu, NotebookText, Play, Rabbit, Send, UserRoundPlus, Volume2 } from "lucide-react";
 import type { AuthUser, ChatMessageDto, ClientToServerEvents, RunoutMode, ServerToClientEvents } from "@friends-poker/shared";
 import {
   compareEvaluations,
@@ -14,8 +14,10 @@ import {
   type PublicEnginePlayer,
   type PublicPokerGameState,
 } from "@friends-poker/poker-engine";
-import { API_URL, getMe } from "../../../lib/api";
+import { getMe } from "../../../lib/api";
 import { formatCard, isRed } from "../../../lib/cards";
+import { playSound, stopAllinSound } from "../../../lib/sound";
+import { EMOJI_CATEGORIES } from "../../../lib/emoji-data";
 
 type TypedSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
 
@@ -26,6 +28,7 @@ interface RuntimeSeat {
   tableChips: number;
   ready: boolean;
   connected: boolean;
+  emoji?: string;
 }
 
 interface RoomState {
@@ -42,6 +45,7 @@ interface RoomState {
     maxBuyIn: number;
     actionTimeoutSeconds: number;
     creatorOnlyStart: boolean;
+    rabbitHunting: boolean;
   };
   seats: RuntimeSeat[];
   spectatorCount: number;
@@ -84,61 +88,119 @@ export default function TablePage() {
   const [chat, setChat] = useState("");
   const [error, setError] = useState("");
   const [seatIndex, setSeatIndex] = useState(0);
-  const [buyIn, setBuyIn] = useState(1000);
+  const [buyIn, setBuyIn] = useState(0);
   const [amount, setAmount] = useState(20);
   const [chipAmount, setChipAmount] = useState(200);
   const [nowMs, setNowMs] = useState(Date.now());
+  const [showSettings, setShowSettings] = useState(false);
+  const [editSmallBlind, setEditSmallBlind] = useState(0);
+  const [editBigBlind, setEditBigBlind] = useState(0);
+  const [editRabbitHunting, setEditRabbitHunting] = useState(true);
+  const [editTimeout, setEditTimeout] = useState(30);
+  const [showLedger, setShowLedger] = useState(false);
+  const [showAIPanel, setShowAIPanel] = useState(false);
+  const [rabbitCards, setRabbitCards] = useState<Card[] | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [emojiPickerSeat, setEmojiPickerSeat] = useState<number | null>(null);
+  const [emojiTab, setEmojiTab] = useState(0);
+  const [throwEmoji, setThrowEmoji] = useState<string | null>(null);
+  const [throwPickerOpen, setThrowPickerOpen] = useState(false);
+  const [emojiFlights, setEmojiFlights] = useState<Array<{ id: number; fromUserId: string; toUserId: string; emoji: string }>>([]);
+  const flightIdRef = useRef(0);
+  const [allinConfirm, setAllinConfirm] = useState(false);
+  const [preFold, setPreFold] = useState(false);
+  const [preStand, setPreStand] = useState(false);
+  const [revealedSelf, setRevealedSelf] = useState(false);
+  const [ledger, setLedger] = useState<{ userId: string; displayName: string; boughtIn: number; cashedOut: number; tableChips: number; net: number }[]>([]);
   const pendingMeRefreshRef = useRef(false);
+  const preFoldTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const prevActionCountRef = useRef(0);
+  const prevPhaseRef = useRef("");
+  const prevTurnUserIdRef = useRef<string | undefined>();
+  const timerWarnedRef = useRef(false);
+  const prevMessageCountRef = useRef(0);
+  const logScrollRef = useRef<HTMLDivElement>(null);
+  const logPausedRef = useRef(false);
+  const flippingRef = useRef<Set<number>>(new Set());
+  const [flipping, setFlipping] = useState<Set<number>>(new Set());
+  const potRef = useRef<HTMLDivElement>(null);
+  const seatRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const [coinAnims, setCoinAnims] = useState<Array<{ id: number; userId: string; delay: number; fromX: number; fromY: number; toX: number; toY: number }>>([]);
+  const logPauseTimerRef = useRef<ReturnType<typeof setTimeout>>();
 
   useEffect(() => {
-    let activeSocket: TypedSocket | undefined;
-    async function connect() {
-      const user = await getMe();
-      if (!user) {
-        location.href = "/login";
-        return;
-      }
-      setMe(user);
-      activeSocket = io(typeof window !== "undefined" ? "" : API_URL, {
-        withCredentials: true,
-        transports: ["websocket", "polling"],
-      });
-      setSocket(activeSocket);
-      activeSocket.on("connect", () => {
-        activeSocket?.emit("room:join", { roomId });
-        activeSocket?.emit("state:request", { roomId });
-      });
-      activeSocket.on("room:state", (state) => {
-        setRoom(state as RoomState);
-        if (pendingMeRefreshRef.current) {
-          pendingMeRefreshRef.current = false;
-          void getMe().then((currentUser) => {
-            if (currentUser) {
-              setMe(currentUser);
-            }
-          });
-        }
-      });
-      activeSocket.on("game:state", (state) =>
-        setRoom((prev) => (prev ? { ...prev, game: state as PublicPokerGameState } : prev)),
-      );
-      activeSocket.on("chat:message", (message) => setMessages((prev) => [...prev.slice(-80), message]));
-      activeSocket.on("error", (payload) => {
+    let cleanedUp = false;
+    const activeSocket: TypedSocket = io({
+      withCredentials: true,
+      transports: ["polling"],
+    });
+    setSocket(activeSocket);
+
+    // Register listeners synchronously before any async work
+    activeSocket.on("connect", () => {
+      activeSocket.emit("room:join", { roomId });
+      activeSocket.emit("state:request", { roomId });
+    });
+    activeSocket.on("room:state", (state) => {
+      setRoom(state as RoomState);
+      if (pendingMeRefreshRef.current) {
         pendingMeRefreshRef.current = false;
-        setError(payload.message);
-      });
-    }
-    void connect();
+        void getMe().then((currentUser) => {
+          if (currentUser) setMe(currentUser);
+        });
+      }
+    });
+    activeSocket.on("game:state", (state) =>
+      setRoom((prev) => (prev ? { ...prev, game: state as PublicPokerGameState } : prev)),
+    );
+    activeSocket.on("chat:message", (message) => setMessages((prev) => [...prev.slice(-80), message]));
+    activeSocket.on("emoji:throw", (payload: any) => {
+      setEmojiFlights((prev) => [...prev, { id: flightIdRef.current++, fromUserId: payload.fromUserId, toUserId: payload.toUserId, emoji: payload.emoji }]);
+    });
+    activeSocket.on("game:rabbit-cards", (payload: any) => {
+      setRabbitCards(payload.cards ?? []);
+    });
+    activeSocket.on("error", (payload) => {
+      pendingMeRefreshRef.current = false;
+      setError(payload.message);
+    });
+
+    void getMe().then((user) => {
+      if (cleanedUp) return;
+      if (!user) { location.href = "/login"; return; }
+      setMe(user);
+    });
+
     return () => {
-      activeSocket?.emit("room:leave", { roomId });
-      activeSocket?.disconnect();
+      cleanedUp = true;
+      activeSocket.emit("room:leave", { roomId });
+      activeSocket.disconnect();
     };
   }, [roomId]);
 
   useEffect(() => {
-    const timer = window.setInterval(() => setNowMs(Date.now()), 500);
+    const timer = window.setInterval(() => setNowMs(Date.now()), 100);
     return () => window.clearInterval(timer);
   }, []);
+
+  // ESC key cancels throw mode
+  useEffect(() => {
+    if (!throwEmoji) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { setThrowEmoji(null); setThrowPickerOpen(false); } };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [throwEmoji]);
+
+  // Clean up finished emoji flights after animation
+  useEffect(() => {
+    if (emojiFlights.length === 0) return;
+    const timer = setTimeout(() => setEmojiFlights([]), 800);
+    return () => clearTimeout(timer);
+  }, [emojiFlights.length]);
+
+  useEffect(() => {
+    if (room?.settings.maxBuyIn && buyIn === 0) setBuyIn(room.settings.maxBuyIn);
+  }, [room?.settings.maxBuyIn, buyIn]);
 
   const maxPlayers = room?.settings.maxPlayers ?? 9;
   const mySeat = room?.seats.find((seat) => seat.userId === me?.id);
@@ -156,6 +218,7 @@ export default function TablePage() {
   const isHandPaused = nextHandSeconds > 0;
   const isRevealing = room?.game?.phase === "revealing";
   const isFinished = room?.game?.phase === "finished";
+  const isShowdownHand = isFinished && room?.game?.showdownEvaluations && Object.keys(room.game.showdownEvaluations).length > 0;
   const isActiveHand = Boolean(room?.game && !isFinished);
   const runoutSelection = room?.game?.runoutSelection;
   const isRunoutEligible = Boolean(me?.id && runoutSelection?.eligiblePlayerIds.includes(me.id));
@@ -164,7 +227,7 @@ export default function TablePage() {
   const actionEnabled = isMyTurn(room, me) && !runoutSelection && !isRevealing && !isFinished;
   const toCall = myPlayer && room?.game ? Math.max(0, room.game.currentBet - myPlayer.committedThisStreet) : 0;
   const betOrRaiseAction = room?.game && room.game.currentBet > 0 ? "raise" : "bet";
-  const canAdjustChips = Boolean(mySeat && !isActiveHand);
+  const isSeated = Boolean(mySeat);
 
   const potTotal = useMemo(
     () => room?.game?.players.reduce((sum, player) => sum + player.totalCommitted, 0) ?? 0,
@@ -172,10 +235,15 @@ export default function TablePage() {
   );
 
   const potQuickAmounts = useMemo(() => {
+    const ratios = [0.33, 0.5, 0.66, 1];
     if (!room?.game || !myPlayer) {
-      return [];
+      return ratios.map((ratio) => ({
+        ratio,
+        label: `${Math.round(ratio * 100)}%池`,
+        amount: 0,
+      }));
     }
-    return [0.33, 0.5, 0.66, 1].map((ratio) => ({
+    return ratios.map((ratio) => ({
       ratio,
       label: `${Math.round(ratio * 100)}%池`,
       amount: potSizedAmount(room.game!, myPlayer, potTotal, ratio),
@@ -204,6 +272,180 @@ export default function TablePage() {
         .sort((a, b) => b.delta - a.delta) ?? [],
     [room?.game?.players, winnerDeltas],
   );
+  const winnerIds = useMemo(() => new Set(winners.map((w) => w.player.userId)), [winners]);
+
+  // Winner's best 5 cards for showdown highlighting
+  const winnerBestCards = useMemo(() => {
+    if (!isShowdownHand || winners.length === 0) return new Set<string>();
+    const evals = room?.game?.showdownEvaluations;
+    if (!evals) return new Set<string>();
+    const cards = new Set<string>();
+    for (const w of winners) {
+      const e = evals[w.player.userId];
+      if (e?.cards) {
+        for (const c of e.cards) cards.add(`${c.rank}${c.suit}`);
+      }
+    }
+    return cards;
+  }, [isShowdownHand, winners, room?.game?.showdownEvaluations]);
+
+  // Auto-scroll action log
+  useEffect(() => {
+    const el = logScrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+      if (!atBottom) {
+        logPausedRef.current = true;
+        clearTimeout(logPauseTimerRef.current);
+        logPauseTimerRef.current = setTimeout(() => { logPausedRef.current = false; }, 10000);
+      }
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => { el.removeEventListener("scroll", onScroll); clearTimeout(logPauseTimerRef.current); };
+  }, []);
+
+  useEffect(() => {
+    if (logPausedRef.current) return;
+    const el = logScrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  });
+
+  // Sound effects — triggered locally via room state changes, everyone hears action sounds
+  const actionLog = room?.game?.actionLog ?? [];
+  const actionCount = actionLog.length;
+  const handId = room?.game?.handId ?? "";
+
+  // Reset action counter when a new hand starts
+  const prevHandIdRef = useRef("");
+  useEffect(() => {
+    if (handId && handId !== prevHandIdRef.current) {
+      prevHandIdRef.current = handId;
+      prevActionCountRef.current = 0;
+      stopAllinSound();
+      setRabbitCards(null);
+    }
+  }, [handId]);
+
+  // Sync ref on initial mount (avoid replaying past actions)
+  useEffect(() => {
+    if (actionCount > 0 && prevActionCountRef.current === 0) {
+      prevActionCountRef.current = actionCount;
+    }
+  }, [actionCount]);
+
+  useEffect(() => {
+    if (actionCount <= prevActionCountRef.current) return;
+    for (let i = prevActionCountRef.current; i < actionCount; i++) {
+      const a = actionLog[i]?.action;
+      if (a === "fold") playSound("fold");
+      else if (a === "check") playSound("check");
+      else if (a === "call") playSound("call");
+      else if (a === "bet") playSound("bet");
+      else if (a === "raise") playSound("raise");
+      else if (a === "all-in") playSound("allin");
+    }
+    prevActionCountRef.current = actionCount;
+  }, [actionCount]);
+
+  useEffect(() => {
+    const phase = room?.game?.phase;
+    if (phase && phase !== prevPhaseRef.current && phase !== "finished") {
+      setCoinAnims([]);
+    }
+    if (phase && phase !== prevPhaseRef.current && ["flop", "turn", "river"].includes(phase)) {
+      playSound("deal");
+    }
+    if (phase === "finished" && prevPhaseRef.current && prevPhaseRef.current !== "finished") {
+      if (winners.length > 0) playSound("win");
+      setPreFold(false);
+      setRevealedSelf(false);
+      // Coin fly animation
+      const potEl = potRef.current;
+      if (potEl && winners.length > 0) {
+        const potRect = potEl.getBoundingClientRect();
+        const fromX = potRect.left + potRect.width / 2;
+        const fromY = potRect.top + potRect.height / 2;
+        const anims: typeof coinAnims = [];
+        let id = 0;
+        for (const w of winners) {
+          const seatEl = seatRefs.current.get(w.player.seatIndex);
+          if (!seatEl) continue;
+          const seatRect = seatEl.getBoundingClientRect();
+          const toX = seatRect.left + seatRect.width / 2;
+          const toY = seatRect.top + seatRect.height / 2;
+          const count = Math.ceil(w.delta / 100);
+          for (let i = 0; i < count; i++) {
+            anims.push({ id: id++, userId: w.player.userId, delay: i * 0.1, fromX, fromY, toX, toY });
+          }
+        }
+        setCoinAnims(anims);
+      }
+      clearTimeout(preFoldTimerRef.current);
+      if (preStand) { setPreStand(false); emit("room:stand", { roomId }); }
+    }
+    prevPhaseRef.current = phase ?? "";
+  }, [room?.game?.phase, winners.length]);
+
+  // Card flip animation
+  useEffect(() => {
+    const cards = room?.game?.communityCards ?? [];
+    const newCards: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      const hasNew = cards[i] && !flippingRef.current.has(i);
+      const cardChanged = cards[i]?.rank !== undefined;
+      if (cardChanged && hasNew) newCards.push(i);
+    }
+    if (newCards.length === 0) return;
+    const set = new Set([...flippingRef.current, ...newCards]);
+    flippingRef.current = set;
+    setFlipping(new Set(set));
+    // Remove flip state after animation
+    const maxDelay = newCards.length === 3 ? newCards.length * 120 + 300 : 300;
+    const timer = setTimeout(() => {
+      flippingRef.current = new Set();
+      setFlipping(new Set());
+    }, maxDelay);
+    return () => clearTimeout(timer);
+  }, [room?.game?.communityCards]);
+
+  // Turn sound + pre-fold auto-action
+  useEffect(() => {
+    const turnUserId = room?.game?.currentTurnUserId;
+    if (turnUserId && turnUserId === me?.id && turnUserId !== prevTurnUserIdRef.current) {
+      playSound("turn");
+      timerWarnedRef.current = false;
+      // Pre-fold check: auto-fold after 1s delay
+      clearTimeout(preFoldTimerRef.current);
+      if (preFold) {
+        preFoldTimerRef.current = setTimeout(() => {
+          sendAction("fold");
+        }, 1000);
+      }
+    }
+    if (turnUserId !== me?.id) {
+      setAllinConfirm(false);
+      clearTimeout(preFoldTimerRef.current);
+    }
+    prevTurnUserIdRef.current = turnUserId;
+  }, [room?.game?.currentTurnUserId, me?.id, preFold]);
+
+  // Timer warning — only for the active player
+  useEffect(() => {
+    if (!actionEnabled || !remainingSeconds || remainingSeconds > 5) return;
+    if (!timerWarnedRef.current) {
+      playSound("timer");
+      timerWarnedRef.current = true;
+    }
+  }, [actionEnabled, remainingSeconds]);
+
+  // Chat sound — everyone hears new messages
+  useEffect(() => {
+    if (messages.length > prevMessageCountRef.current) {
+      playSound("chat");
+    }
+    prevMessageCountRef.current = messages.length;
+  }, [messages.length]);
 
   const equityByUserId = useMemo(() => {
     const equities = new Map<string, { winPercent: number; tiePercent: number; samples: number }>();
@@ -234,6 +476,14 @@ export default function TablePage() {
   }
 
   function sendAction(action: "fold" | "check" | "call" | "bet" | "raise" | "all-in") {
+    if (action === "all-in" && !allinConfirm) {
+      setAllinConfirm(true);
+      return;
+    }
+    setAllinConfirm(false);
+    setPreFold(false);
+    setPreStand(false);
+    clearTimeout(preFoldTimerRef.current);
     emit("game:action", {
       roomId,
       action,
@@ -247,6 +497,7 @@ export default function TablePage() {
 
   function adjustTableChips(type: "add" | "remove") {
     pendingMeRefreshRef.current = true;
+    playSound("chip");
     emit(type === "add" ? "room:chips:add" : "room:chips:remove", { roomId, amount: chipAmount });
   }
 
@@ -260,6 +511,49 @@ export default function TablePage() {
       emit("chat:send", { roomId, message: chat.trim() });
       setChat("");
     }
+  }
+
+  function openSettings() {
+    if (!room) return;
+    setEditSmallBlind(room.settings.smallBlind);
+    setEditBigBlind(room.settings.bigBlind);
+    setEditRabbitHunting(room.settings.rabbitHunting);
+    setEditTimeout(room.settings.actionTimeoutSeconds);
+    setShowSettings(true);
+  }
+
+  async function saveSettings() {
+    if (!room) return;
+    setError("");
+    try {
+      const res = await fetch("/api/rooms/" + roomId + "/settings", {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          smallBlind: editSmallBlind,
+          bigBlind: editBigBlind,
+          actionTimeoutSeconds: editTimeout,
+          rabbitHunting: editRabbitHunting,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.message ?? "设置失败");
+      }
+      setShowSettings(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "设置失败");
+    }
+  }
+
+  async function openLedger() {
+    setError("");
+    try {
+      const res = await fetch("/api/rooms/" + roomId + "/ledger", { credentials: "include" });
+      if (res.ok) setLedger(await res.json());
+    } catch { /* ignore */ }
+    setShowLedger(true);
   }
 
   return (
@@ -286,7 +580,16 @@ export default function TablePage() {
               >
                 <Play size={17} /> {isHandPaused ? `${nextHandSeconds} 秒后自动开局` : "开始一手"}
               </button>
-              <button className="btn" onClick={() => emit("room:stand", { roomId })}>
+              <button
+                className={`btn ${preStand ? "btnPreFold" : ""}`}
+                disabled={!isSeated}
+                onClick={() => {
+                  if (isActiveHand) { setPreStand((v) => !v); return; }
+                  setPreStand(false);
+                  emit("room:stand", { roomId });
+                }}
+              >
+                {preStand && <span className="preFoldCheck">✓</span>}
                 <DoorOpen size={17} /> 站起
               </button>
             </>
@@ -313,18 +616,21 @@ export default function TablePage() {
       <div className="tableLayout">
         <section className="tableArea">
           <div className="tableRail" aria-label="牌桌工具">
-            <button className="iconButton" title="牌桌菜单" type="button">
+            <button className="iconButton" title="房间设置" type="button" onClick={openSettings}>
               <Menu size={26} />
             </button>
             <button className="iconButton" title="声音设置" type="button">
               <Volume2 size={24} />
             </button>
-            <button className="iconButton" title="记录面板" type="button">
+            <button className="iconButton" title="筹码记录" type="button" onClick={openLedger}>
               <NotebookText size={23} />
+            </button>
+            <button className="iconButton" title="AI玩家" type="button" onClick={() => setShowAIPanel(!showAIPanel)}>
+              <Bot size={22} />
             </button>
           </div>
 
-          <div className="pokerTable">
+          <div className={`pokerTable ${throwEmoji ? "throwMode" : ""}`} onClick={() => { if (throwEmoji) { setThrowEmoji(null); } }}>
             <div className="tableCornerMeta">
               <span>NLH</span>
               <strong>
@@ -335,10 +641,12 @@ export default function TablePage() {
               <span>{room ? `${room.settings.minPlayersToStart}+ 人开局 · ${room.settings.actionTimeoutSeconds} 秒行动` : ""}</span>
             </div>
             <div className="centerPot">
-              <div className="potPill">
-                <CircleDollarSign size={18} /> {potTotal}
+              <div className="centerTopRow">
+                <div className="potPill" ref={potRef}>
+                  <CircleDollarSign size={18} /> {potTotal}
+                </div>
+                {room?.game && room.game.currentBet > 0 && <span className="streetBetPill">本轮最高 {room.game.currentBet}</span>}
               </div>
-              {room?.game && room.game.currentBet > 0 && <span className="streetBetPill">本轮最高 {room.game.currentBet}</span>}
               {runoutBoards && runoutBoards.length > 1 ? (
                 <div className="runoutBoards">
                   {runoutBoards.map((board, boardIndex) => (
@@ -346,29 +654,44 @@ export default function TablePage() {
                       <span className="runoutLabel">第 {boardIndex + 1} 次</span>
                       <div className="community">
                         {[0, 1, 2, 3, 4].map((index) => (
-                          <PokerCard key={index} card={board.cards[index]} />
+                          <PokerCard key={index} card={board.cards[index]} dimmed={isShowdownHand && winnerBestCards.size > 0 && board.cards[index] ? !winnerBestCards.has(`${board.cards[index]!.rank}${board.cards[index]!.suit}`) : undefined} />
                         ))}
                       </div>
                     </div>
                   ))}
                 </div>
               ) : (
-                <div className="community">
-                  {[0, 1, 2, 3, 4].map((index) => (
-                    <PokerCard key={index} card={room?.game?.communityCards[index]} />
-                  ))}
+                <div className="communityRow">
+                  <div className="community">
+                    {[0, 1, 2, 3, 4].map((index) => {
+                      const communityLen = room?.game?.communityCards.length ?? 0;
+                      const c = room?.game?.communityCards[index] ?? rabbitCards?.[index - communityLen];
+                      const isRabbit = Boolean(rabbitCards && index >= communityLen && c);
+                      return (
+                      <PokerCard
+                        key={index}
+                        card={c}
+                        flipping={!rabbitCards && flipping.has(index)}
+                        flipDelay={index * 120}
+                        dimmed={isShowdownHand && winnerBestCards.size > 0 && c ? !winnerBestCards.has(`${c.rank}${c.suit}`) : undefined}
+                        rabbit={isRabbit}
+                      />
+                    );})}
+                  </div>
+                  {isFinished && room?.settings.rabbitHunting && (room?.game?.communityCards.length ?? 0) < 5 && !rabbitCards && (
+                    <button className="rabbitBtn" onClick={() => socket?.emit("game:rabbit", { roomId })} title="Rabbit Hunt"><Rabbit size={18} /></button>
+                  )}
                 </div>
               )}
-              <span className="turnPill">{centerStatusText(room, currentPlayer?.displayName, nextHandSeconds)}</span>
-              {remainingSeconds !== undefined && currentPlayer && (
-                <span className={`timerPill ${remainingSeconds <= 5 ? "timerDanger" : ""}`}>{remainingSeconds} 秒</span>
-              )}
-              {isRevealing && <div className="revealBanner">全下摊牌 · 正在逐张发牌</div>}
-              {isFinished && winners.length > 0 && (
+              {isFinished && winners.length > 0 ? (
                 <div className="resultBanner">
                   {winners.map(({ player, delta }) => `${player.displayName} +${delta}`).join(" · ")}
                   {nextHandSeconds > 0 ? ` · ${nextHandSeconds} 秒后自动下一手` : ""}
                 </div>
+              ) : isRevealing ? (
+                <div className="revealBanner">全下摊牌 · 正在逐张发牌</div>
+              ) : (
+                <span className="turnPill">{centerStatusText(room, currentPlayer?.displayName, nextHandSeconds)}</span>
               )}
             </div>
 
@@ -386,25 +709,34 @@ export default function TablePage() {
                 <div
                   className={`seat ${seat ? "" : "seatEmpty"} ${
                     seat && room?.game?.currentTurnUserId === seat.userId ? "seatActive" : ""
-                  } ${seat?.userId === me?.id ? "seatSelf" : ""}`}
+                  } ${seat?.userId === me?.id ? "seatSelf" : ""} ${
+                    isFinished && seat && winnerIds.has(seat.userId) ? "seatWinner" : ""
+                  } ${throwEmoji && seat && seat.userId !== me?.id ? "seatThrowTarget" : ""}`}
+                  ref={(el) => { if (el) seatRefs.current.set(index, el); }}
                   style={{ left: `${left}%`, top: `${top}%` }}
                   key={index}
+                  onClick={(e) => {
+                    if (!throwEmoji || !seat || seat.userId === me?.id) return;
+                    e.stopPropagation();
+                    socket?.emit("emoji:throw", { roomId, toUserId: seat.userId, emoji: throwEmoji });
+                    // Render local flight animation too
+                    setEmojiFlights((prev) => [...prev, { id: flightIdRef.current++, fromUserId: me!.id, toUserId: seat.userId, emoji: throwEmoji }]);
+                  }}
                 >
                   {seat ? (
                     <>
                       <div className="seatName">
                         <span>{seat.displayName}</span>
-                        <span className={seat.connected ? "statusOnline" : "statusOffline"}>{seat.connected ? "在线" : "离线"}</span>
                       </div>
-                      <div className="seatChipLine">
-                        <span>筹码 {seat.tableChips}</span>
-                        {handDelta > 0 && <strong className="winDelta">+{handDelta}</strong>}
-                      </div>
-                      <div className="muted">{seat.ready ? "已准备" : "未准备"}</div>
+                      <span className={`seatStatus ${seat.connected ? "statusOnline" : "statusOffline"}`}>{seat.connected ? "在线" : "离线"}</span>
+                      <div className="seatChips">{seat.tableChips}</div>
                       <div className="muted">
                         {actionLabel(player?.lastAction ?? player?.status)} · 投入 {player?.totalCommitted ?? 0}
                       </div>
-                      {player && player.committedThisStreet > 0 && <div className="streetBetBadge">本轮 {player.committedThisStreet}</div>}
+                      {player && player.actedThisStreet && player.lastAction && !isFinished && <div className="streetBetBadge">{streetActionLabel(player.lastAction, player.committedThisStreet)}</div>}
+                      {player && isFinished && winnerIds.has(player.userId) && (
+                        <div className="streetBetBadge winBadge">赢 +{winnerDeltas.get(player.userId)}</div>
+                      )}
                       {currentHand && <div className="handStrengthBadge">{currentHand}</div>}
                       {isRevealing && equity && (
                         <div className="equityBadge">
@@ -412,24 +744,54 @@ export default function TablePage() {
                           {equity.tiePercent > 0 ? ` · 平分 ${formatPercent(equity.tiePercent)}` : ""}
                         </div>
                       )}
-                      <div className="seatCards">
-                        {(player?.holeCards ?? [undefined, undefined]).map((card, cardIndex) => (
-                          <MiniCard key={cardIndex} card={card as Card | undefined} />
-                        ))}
+                      <div className={`seatCards ${player?.status === "folded" ? "seatCardsFolded" : ""}`}>
+                        {preStand && seat.userId === me?.id ? (
+                          <span className="readyInBadge">Mamba out</span>
+                        ) : isFinished && player?.status === "folded" && seat.userId === me?.id ? (
+                          revealedSelf ? (
+                            player.holeCards?.map((card, cardIndex) => (
+                              <MiniCard key={cardIndex} card={card as Card} />
+                            ))
+                          ) : (
+                            <button className="showCardBtn" onClick={() => { setRevealedSelf(true); socket?.emit("player:reveal", { roomId }); }} title="点击展示手牌">
+                              <div className="miniCard cardBack">?</div>
+                              <div className="miniCard cardBack">?</div>
+                            </button>
+                          )
+                        ) : player?.holeCards?.length ? (
+                          player.holeCards.map((card, cardIndex) => (
+                            <MiniCard key={cardIndex} card={card as Card} dimmed={isShowdownHand && winnerBestCards.size > 0 ? !winnerBestCards.has(`${(card as Card).rank}${(card as Card).suit}`) : undefined} />
+                          ))
+                        ) : player ? (
+                          <><div className="miniCard cardBack">?</div><div className="miniCard cardBack">?</div></>
+                        ) : seat.ready ? (
+                          <span className="readyInBadge">Mamba in</span>
+                        ) : null}
+                        {player?.status === "folded" && <span className="foldOverlay">FOLD</span>}
+                        {isFinished && !isShowdownHand && seat.userId === me?.id && winnerIds.has(seat.userId) && !revealedSelf && (
+                          <button className="showToTableBtn" onClick={() => { setRevealedSelf(true); socket?.emit("player:reveal", { roomId }); }}>Show</button>
+                        )}
                       </div>
                       <div className="seatMarkers">
                         {room?.game?.buttonSeatIndex === index && <span className="dealerChip">D</span>}
                         {blindLabel && <span className="blindChip">{blindLabel}</span>}
                       </div>
-                      {room?.game?.currentTurnUserId === seat.userId && remainingSeconds !== undefined && (
-                        <div className="seatTimer" aria-label="行动倒计时">
-                          <span style={{ width: `${remainingPercent ?? 0}%` }} />
-                          <em>{remainingSeconds}</em>
-                        </div>
-                      )}
+                      <div
+                        className={`seatEmoji ${seat.emoji ? "hasEmoji" : ""}`}
+                        title={seat.emoji ? "点击更换或清除表情" : "点击设置表情"}
+                        onClick={(e) => { e.stopPropagation(); setEmojiPickerSeat(emojiPickerSeat === index ? null : index); setEmojiTab(0); }}
+                      >
+                        {seat.emoji || "😊"}
+                      </div>
                     </>
                   ) : (
                     <span>{index + 1} 号空位</span>
+                  )}
+                  {seat && room?.game?.currentTurnUserId === seat.userId && remainingSeconds !== undefined && (
+                    <div className="seatTimer" aria-label="行动倒计时">
+                      <span style={{ width: `${remainingPercent ?? 0}%` }} />
+                      <em>{remainingSeconds}</em>
+                    </div>
                   )}
                 </div>
               );
@@ -470,14 +832,19 @@ export default function TablePage() {
                 )}
               </div>
             )}
-            <button className="btn btnDanger" disabled={!actionEnabled} onClick={() => sendAction("fold")}>
+            <button
+              className={`btn btnDanger ${preFold ? "btnPreFold" : ""}`}
+              disabled={!isSeated || !isActiveHand}
+              onClick={() => {
+                if (actionEnabled) { sendAction("fold"); return; }
+                setPreFold((v) => !v);
+              }}
+            >
+              {preFold && <span className="preFoldCheck">✓</span>}
               弃牌
             </button>
-            <button className="btn" disabled={!actionEnabled} onClick={() => sendAction("check")}>
-              过牌
-            </button>
-            <button className="btn" disabled={!actionEnabled} onClick={() => sendAction("call")}>
-              跟注{toCall > 0 ? ` ${toCall}` : ""}
+            <button className="btn" disabled={!actionEnabled} onClick={() => sendAction(toCall > 0 ? "call" : "check")}>
+              {toCall > 0 ? `跟注 ${toCall}` : "过牌"}
             </button>
             <div className="potQuickButtons">
               {potQuickAmounts.map((option) => (
@@ -492,15 +859,61 @@ export default function TablePage() {
                 </button>
               ))}
             </div>
-            <input className="input betInput" type="number" value={amount} onChange={(event) => setAmount(Number(event.target.value))} />
-            <button className="btn" disabled={!actionEnabled} onClick={sendBetOrRaise}>
+            <input className="input betInput" type="number" value={amount} onChange={(event) => setAmount(Number(event.target.value))} onKeyDown={(e) => { if (e.key === "Enter" && actionEnabled) sendBetOrRaise(); }} />
+            <button className="btn btnBet" disabled={!actionEnabled} onClick={sendBetOrRaise}>
               {betOrRaiseAction === "raise" ? "加注到" : "下注"}
             </button>
-            <button className="btn btnPrimary" disabled={!actionEnabled} onClick={() => sendAction("all-in")}>
-              全下
+            <button className={`btn btnAllin ${allinConfirm ? "btnAllinGlow" : ""}`} disabled={!actionEnabled} onClick={() => sendAction("all-in")}>
+              {allinConfirm ? "确认全下" : "全下"}
             </button>
           </div>
         </section>
+
+        {coinAnims.map((coin) => (
+          <span
+            key={coin.id}
+            className="coinFly"
+            style={{
+              left: coin.fromX,
+              top: coin.fromY,
+              animationDelay: `${coin.delay}s`,
+              "--toX": `${coin.toX}px`,
+              "--toY": `${coin.toY}px`,
+              "--fromX": `${coin.fromX}px`,
+              "--fromY": `${coin.fromY}px`,
+            } as React.CSSProperties}
+          >🪙</span>
+        ))}
+
+        {emojiFlights.map((flight) => {
+          const fromSeat = room?.seats.find((s) => s.userId === flight.fromUserId);
+          const toSeat = room?.seats.find((s) => s.userId === flight.toUserId);
+          const fromEl = fromSeat ? seatRefs.current.get(fromSeat.seatIndex) : null;
+          const toEl = toSeat ? seatRefs.current.get(toSeat.seatIndex) : null;
+          if (!fromEl || !toEl) return null;
+          const fromRect = fromEl.getBoundingClientRect();
+          const toRect = toEl.getBoundingClientRect();
+          const fromX = fromRect.left + fromRect.width / 2;
+          const fromY = fromRect.top + fromRect.height / 2;
+          const toX = toRect.left + toRect.width / 2;
+          const toY = toRect.top + toRect.height / 2;
+          return (
+            <span
+              key={flight.id}
+              className="emojiFly"
+              style={{
+                left: fromX,
+                top: fromY,
+                "--toX": `${toX}px`,
+                "--toY": `${toY}px`,
+                "--fromX": `${fromX}px`,
+                "--fromY": `${fromY}px`,
+              } as React.CSSProperties}
+            >
+              {flight.emoji}
+            </span>
+          );
+        })}
 
         <aside className="sidePanel tableDrawer">
           <div className="card tableInfoCard">
@@ -519,19 +932,19 @@ export default function TablePage() {
             </div>
             <div className="chipAdjustPanel">
               <input
-                className="input"
+                className="input chipInput"
                 min={1}
                 type="number"
                 value={chipAmount}
                 onChange={(event) => setChipAmount(Number(event.target.value))}
               />
-              <button className="btn" disabled={!canAdjustChips} onClick={() => adjustTableChips("add")}>
+              <button className="btn" disabled={!isSeated} onClick={() => adjustTableChips("add")}>
                 补码
               </button>
-              <button className="btn" disabled={!canAdjustChips} onClick={() => adjustTableChips("remove")}>
+              <button className="btn" disabled={!isSeated} onClick={() => adjustTableChips("remove")}>
                 扣码
               </button>
-              {!canAdjustChips && <small className="muted">一手牌结束后可调整</small>}
+              {isSeated && isActiveHand && <small className="muted">补码下一手生效</small>}
             </div>
             <div className="statRow">
               <span className="muted">观战人数</span>
@@ -539,35 +952,225 @@ export default function TablePage() {
             </div>
           </div>
 
-          <div className="card chatCard">
-            <h2>聊天</h2>
-            <div className="chatLog">
-              {messages.map((message) => (
-                <div className="chatLine" key={message.id}>
-                  <strong>{message.displayName}</strong>
-                  <div>{message.message}</div>
-                  <small className="muted">{new Date(message.createdAt).toLocaleTimeString()}</small>
-                </div>
-              ))}
-            </div>
-            <form className="actions" onSubmit={sendChat}>
-              <input className="input" value={chat} maxLength={300} onChange={(event) => setChat(event.target.value)} />
-              <button className="btn btnPrimary" type="submit">
-                <Send size={17} /> 发送
-              </button>
-            </form>
-          </div>
-
           <div className="card tableLogCard">
             <h2>行动记录</h2>
-            {(room?.game?.actionLog ?? []).slice(-12).map((entry, index) => (
-              <div className="listRow" key={`${entry.createdAt}-${index}`}>
-                <span>{actionLabel(entry.action)}</span>
-                <span className="muted">{entry.amount ?? ""}</span>
+            <div className="logScroll" ref={logScrollRef}>
+              {(room?.game?.actionLog ?? []).map((entry, index) => {
+                const name = room?.game?.players.find((p) => p.userId === entry.userId)?.displayName ?? "";
+                return (
+                  <div className="listRow" key={`${entry.createdAt}-${index}`}>
+                    <span>{name ? `${name} ` : ""}{actionLabel(entry.action)}</span>
+                    <span className="muted">{entry.amount ?? ""}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </aside>
+
+        <div className="chatFloat">
+          <div className="chatLog">
+            {messages.map((message) => (
+              <div className="chatLine" key={message.id}>
+                <strong>{message.displayName}</strong>
+                <div>{message.message}</div>
+                <small className="muted">{new Date(message.createdAt).toLocaleTimeString()}</small>
               </div>
             ))}
           </div>
-        </aside>
+          <div className="chatFormRow">
+            <form className="actions" onSubmit={sendChat}>
+              <input className="input" value={chat} maxLength={300} onChange={(event) => setChat(event.target.value)} placeholder="输入消息..." />
+              <button className="btn btnPrimary" type="submit">
+                <Send size={14} />
+              </button>
+            </form>
+            <button
+              className={`btn ${throwEmoji ? "btnDanger" : ""}`}
+              title="投掷表情"
+              onClick={() => {
+                if (throwEmoji) { setThrowEmoji(null); setThrowPickerOpen(false); return; }
+                setThrowPickerOpen(true);
+              }}
+            >
+              🎯
+            </button>
+            {throwPickerOpen && !throwEmoji && (
+              <div className="throwPickerPopover">
+                <div className="throwPickerGrid">
+                  {["😂","🔥","💩","🍅","👏","❤️","🎉","💀","😭","🤡","👍","👎","😍","🤬","🙏","💪","🎯","🍻","💣","✨","⚡","👑","🎁","🚀","🖕"].map((e) => (
+                    <button key={e} className="throwEmojiCell" onClick={() => { setThrowEmoji(e); setThrowPickerOpen(false); }}>
+                      {e}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {showSettings && (
+          <div className="modalOverlay" onClick={() => setShowSettings(false)}>
+            <div className="modalCard" onClick={(e) => e.stopPropagation()}>
+              <h2>房间设置</h2>
+              <div className="field">
+                <label>小盲</label>
+                <input className="input" type="number" min={1} value={editSmallBlind} onChange={(e) => setEditSmallBlind(Number(e.target.value))} />
+              </div>
+              <div className="field">
+                <label>大盲</label>
+                <input className="input" type="number" min={2} value={editBigBlind} onChange={(e) => setEditBigBlind(Number(e.target.value))} />
+              </div>
+              <div className="field">
+                <label>行动倒计时（秒）</label>
+                <input className="input" type="number" min={5} max={300} value={editTimeout} onChange={(e) => setEditTimeout(Number(e.target.value))} />
+              </div>
+              <div className="field">
+                <label>
+                  <input type="checkbox" checked={editRabbitHunting} onChange={(e) => setEditRabbitHunting(e.target.checked)} />
+                  {" "}Rabbit Hunting
+                </label>
+                <small className="muted">牌局提前结束时展示后续公共牌</small>
+              </div>
+              <div className="actions">
+                <button className="btn" onClick={() => setShowSettings(false)}>取消</button>
+                <button className="btn btnPrimary" onClick={saveSettings}>保存</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {showLedger && (
+          <div className="modalOverlay" onClick={() => setShowLedger(false)}>
+            <div className="modalCard modalWide" onClick={(e) => e.stopPropagation()}>
+              <h2>筹码记录</h2>
+              <table className="ledgerTable">
+                <thead>
+                  <tr><th>玩家</th><th>买入</th><th>卖出</th><th>桌上筹码</th><th>净收入</th></tr>
+                </thead>
+                <tbody>
+                  {ledger.map((row) => (
+                    <tr key={row.userId}>
+                      <td>{row.displayName}</td>
+                      <td>{row.boughtIn}</td>
+                      <td>{row.cashedOut}</td>
+                      <td>{row.tableChips}</td>
+                      <td className={row.net >= 0 ? "netPositive" : "netNegative"}>
+                        {row.net >= 0 ? "+" : ""}{row.net}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="actions">
+                <button className="btn" onClick={() => setShowLedger(false)}>关闭</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {showAIPanel && (
+          <div className="modalOverlay" onClick={() => setShowAIPanel(false)}>
+            <div className="modalCard" onClick={(e) => e.stopPropagation()}>
+              <h2>🤖 AI 玩家管理</h2>
+              <div className="aiPanelBody">
+                <button
+                  className="btn btnPrimary aiPanelBtn"
+                  disabled={aiLoading}
+                  onClick={async () => {
+                    setAiLoading(true);
+                    try {
+                      const res = await fetch("/api/rooms/" + roomId + "/ai-players", {
+                        method: "POST",
+                      });
+                      if (!res.ok) {
+                        const data = await res.json().catch(() => ({}));
+                        setError(data.message ?? "添加AI失败");
+                      } else {
+                        setError("");
+                      }
+                    } catch {
+                      setError("添加AI失败");
+                    }
+                    setAiLoading(false);
+                  }}
+                >
+                  {aiLoading ? "添加中..." : "+ 添加 AI 玩家"}
+                </button>
+                <button
+                  className="btn btnDanger aiPanelBtn"
+                  disabled={aiLoading}
+                  onClick={async () => {
+                    setAiLoading(true);
+                    try {
+                      const res = await fetch("/api/rooms/" + roomId + "/ai-players", {
+                        method: "DELETE",
+                      });
+                      const data = await res.json().catch(() => ({}));
+                      if (res.ok) {
+                        setError(`已移除 ${data.removed ?? 0} 个AI玩家`);
+                      } else {
+                        setError(data.message ?? "删除AI失败");
+                      }
+                    } catch {
+                      setError("删除AI失败");
+                    }
+                    setAiLoading(false);
+                  }}
+                >
+                  删除所有 AI 玩家
+                </button>
+              </div>
+              <div className="actions">
+                <button className="btn" onClick={() => setShowAIPanel(false)}>关闭</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {emojiPickerSeat !== null && (
+          <div className="modalOverlay" onClick={() => setEmojiPickerSeat(null)}>
+            <div className="emojiPicker" onClick={(e) => e.stopPropagation()}>
+              <div className="emojiTabs">
+                {EMOJI_CATEGORIES.map((cat, i) => (
+                  <button
+                    key={cat.label}
+                    className={`emojiTab ${i === emojiTab ? "active" : ""}`}
+                    onClick={() => setEmojiTab(i)}
+                  >
+                    {cat.label}
+                  </button>
+                ))}
+              </div>
+              <div className="emojiGrid">
+                {EMOJI_CATEGORIES[emojiTab].emojis.map((emoji) => (
+                  <button
+                    key={emoji}
+                    className="emojiCell"
+                    onClick={() => {
+                      socket?.emit("emoji:set", { roomId, emoji });
+                      setEmojiPickerSeat(null);
+                    }}
+                  >
+                    {emoji}
+                  </button>
+                ))}
+              </div>
+              <div className="emojiActions">
+                <button
+                  className="btn"
+                  onClick={() => {
+                    socket?.emit("emoji:set", { roomId, emoji: "" });
+                    setEmojiPickerSeat(null);
+                  }}
+                >
+                  清除表情
+                </button>
+                <button className="btn" onClick={() => setEmojiPickerSeat(null)}>关闭</button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </main>
   );
@@ -665,6 +1268,22 @@ function actionLabel(action?: string): string {
   return labels[action] ?? action;
 }
 
+function streetActionLabel(lastAction: string, amount: number): string {
+  const labels: Record<string, string> = {
+    fold: "弃牌",
+    check: "过牌",
+    call: "跟注",
+    bet: "下注",
+    raise: "加注",
+    "all-in": "All-in",
+  };
+  const label = labels[lastAction] ?? lastAction;
+  if (lastAction === "fold" || lastAction === "check") {
+    return label;
+  }
+  return `${label} ${amount}`;
+}
+
 function describeCurrentHand(player: PublicEnginePlayer | undefined, communityCards: Card[]): string | undefined {
   const holeCards = player?.holeCards;
   if (!holeCards || holeCards.length === 0 || player?.status === "folded") {
@@ -709,16 +1328,29 @@ function formatPercent(value: number): string {
   return `${Math.round(value * 10) / 10}%`;
 }
 
-function PokerCard({ card }: { card?: Card }) {
-  if (!card) {
-    return <div className="playingCard communityEmpty" />;
-  }
-  return <div className={`playingCard ${isRed(card) ? "redCard" : ""}`}>{formatCard(card)}</div>;
+function PokerCard({ card, flipping, flipDelay = 0, dimmed, rabbit }: { card?: Card; flipping?: boolean; flipDelay?: number; dimmed?: boolean; rabbit?: boolean }) {
+  if (!card) return <div className="playingCard communityEmpty" />;
+  const red = isRed(card);
+  return (
+    <div
+      className={`playingCard ${red ? "redCard" : ""} ${flipping ? "cardFlipping" : ""} ${dimmed === true ? "cardDimmed" : dimmed === false ? "cardHighlight" : ""} ${rabbit ? "rabbitCard" : ""}`}
+      style={flipping ? { animationDelay: `${flipDelay}ms` } : undefined}
+    >
+      <span className="boardRank">{card.rank}</span>
+      <span className="boardSuit">{suitSymbol[card.suit] ?? card.suit}</span>
+    </div>
+  );
 }
 
-function MiniCard({ card }: { card?: Card }) {
-  if (!card) {
-    return <div className="miniCard cardBack">?</div>;
-  }
-  return <div className={`miniCard ${isRed(card) ? "redCard" : ""}`}>{formatCard(card)}</div>;
+const suitSymbol: Record<string, string> = { s: "♠", h: "♥", d: "♦", c: "♣" };
+
+function MiniCard({ card, dimmed }: { card?: Card; dimmed?: boolean }) {
+  if (!card) return <div className="miniCard cardBack">?</div>;
+  const red = isRed(card);
+  return (
+    <div className={`miniCard ${red ? "redCard" : ""} ${dimmed === true ? "cardDimmed" : dimmed === false ? "cardHighlight" : ""}`}>
+      <span className="miniRank">{card.rank}</span>
+      <span className="miniSuit">{suitSymbol[card.suit] ?? card.suit}</span>
+    </div>
+  );
 }

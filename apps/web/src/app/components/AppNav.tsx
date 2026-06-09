@@ -30,7 +30,7 @@ export function AppNav() {
     <nav className="nav">
       <Link href="/rooms">房间</Link>
       <Link href="/rooms/new">创建房间</Link>
-      <Link href="/profile">统计</Link>
+      <Link href="/profile">个人主页</Link>
       {me?.role === "ADMIN" && <Link href="/admin">管理员</Link>}
       <Link href="/login">登录</Link>
     </nav>

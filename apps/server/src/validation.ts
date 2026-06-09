@@ -23,9 +23,18 @@ export const createRoomSchema = z.object({
   actionTimeoutSeconds: z.number().int().min(5).max(300).default(30),
   creatorOnlyStart: z.boolean().default(false),
   allowSpectators: z.boolean().default(true),
+  rabbitHunting: z.boolean().default(true),
 }).refine((room) => room.minPlayersToStart <= room.maxPlayers, {
   message: "开局人数不能大于最大人数",
   path: ["minPlayersToStart"],
+});
+
+export const updateRoomSettingsSchema = z.object({
+  roomId: z.string().min(1),
+  smallBlind: z.number().int().min(1).optional(),
+  bigBlind: z.number().int().min(2).optional(),
+  actionTimeoutSeconds: z.number().int().min(5).max(300).optional(),
+  rabbitHunting: z.boolean().optional(),
 });
 
 export const sitSchema = z.object({

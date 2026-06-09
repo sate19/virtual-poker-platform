@@ -934,3 +934,25 @@ export function comparePlayerHands(
 ): number {
   return compareEvaluations(a.hand, b.hand);
 }
+
+export function rabbitHunt(state: PokerGameState): Card[] {
+  const deck = [...state.deck];
+  const dealt = state.communityCards.length;
+  if (dealt >= 5) return [];
+
+  const cards: Card[] = [];
+  // Deck order after dealing: [future burns + cards]
+  // Skip burn, then take the card(s) for each remaining street
+  const remaining = 5 - dealt;
+  let di = 0;
+
+  for (let needed = remaining; needed > 0; needed--) {
+    di++; // skip burn
+    if (di < deck.length) {
+      cards.push(deck[di]!);
+      di++;
+    }
+  }
+
+  return cards;
+}

@@ -10,7 +10,10 @@ export default function HomePage() {
             面向受邀用户的在线德州扑克对局系统。平台仅使用虚拟筹码，牌局流程、行动校验、边池和结算均由服务端统一处理。
           </p>
           <div className="actions">
-            <Link className="btn btnPrimary" href="/rooms">
+            <Link className="btn btnPrimary" href="/login">
+              登录
+            </Link>
+            <Link className="btn" href="/rooms">
               进入房间列表
             </Link>
             <Link className="btn" href="/register">

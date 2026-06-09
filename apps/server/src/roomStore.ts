@@ -5,12 +5,14 @@ import {
   applyAction,
   chooseRunout,
   getPublicGameStateForUser,
+  rabbitHunt,
   startHand,
   type PokerGameState,
   type RunoutMode,
 } from "@friends-poker/poker-engine";
 import type { AuthUser, ChatMessageDto, RoomSettingsDto, RoomStatus, RoomSummaryDto } from "@friends-poker/shared";
 import { getAutomaticTimeoutAction, reconcileActionClock } from "./actionClock";
+import { type AIDecision, getAIDecision } from "./aiPlayer";
 import { config } from "./config";
 import { prisma } from "./prisma";
 
@@ -21,6 +23,8 @@ export interface RuntimeSeat {
   tableChips: number;
   ready: boolean;
   connected: boolean;
+  pendingChips: number;
+  emoji?: string;
 }
 
 export interface RuntimeRoom {
@@ -35,6 +39,7 @@ export interface RuntimeRoom {
   game?: PokerGameState;
   handCounter: number;
   nextHandReadyAt?: string;
+  revealedPlayerIds: Set<string>;
 }
 
 type PersistedSeat = {
@@ -51,8 +56,9 @@ const actionTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const offlineCloseTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const runoutTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const handPauseTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const aiUserIds = new Set<string>();
 const RUNOUT_REVEAL_DELAY_MS = 1500;
-const HAND_RESULT_HOLD_MS = 3000;
+const HAND_RESULT_HOLD_MS = 7000;
 let realtimeServer: Server | undefined;
 
 interface CloseRoomOptions {
@@ -69,6 +75,13 @@ export function attachRealtimeServer(io: Server): void {
 
 export function rememberSocket(socket: Socket, user: AuthUser): void {
   socketUsers.set(socket.id, user);
+  for (const room of rooms.values()) {
+    const seat = room.seats.find((item) => item.userId === user.id);
+    if (seat) {
+      seat.connected = true;
+      clearOfflineCloseTimer(room.id);
+    }
+  }
 }
 
 export function forgetSocket(socket: Socket): void {
@@ -77,6 +90,9 @@ export function forgetSocket(socket: Socket): void {
   if (!user) {
     return;
   }
+  // Only mark offline if user has no remaining sockets
+  const hasOtherSocket = [...socketUsers.values()].some((u) => u.id === user.id);
+  if (hasOtherSocket) return;
   for (const room of rooms.values()) {
     const seat = room.seats.find((item) => item.userId === user.id);
     if (seat) {
@@ -88,6 +104,12 @@ export function forgetSocket(socket: Socket): void {
 
 export async function hydrateRoomsFromDatabase(): Promise<void> {
   rooms.clear();
+
+  // Restore AI user ID set
+  aiUserIds.clear();
+  const aiUsers = await prisma.user.findMany({ where: { isAI: true }, select: { id: true } });
+  for (const u of aiUsers) aiUserIds.add(u.id);
+
   const persistedRooms = await prisma.room.findMany({
     where: { status: { in: ["WAITING", "PLAYING"] }, deletedAt: null },
     include: { seats: { where: { status: "OCCUPIED" }, include: { user: true } } },
@@ -112,6 +134,7 @@ export async function hydrateRoomsFromDatabase(): Promise<void> {
         actionTimeoutSeconds: persisted.actionTimeoutSeconds,
         creatorOnlyStart: persisted.creatorOnlyStart,
         allowSpectators: persisted.allowSpectators,
+        rabbitHunting: (persisted as any).rabbitHunting ?? true,
       },
       seats: persisted.seats.map((seat: PersistedSeat) => ({
         userId: seat.userId,
@@ -120,10 +143,12 @@ export async function hydrateRoomsFromDatabase(): Promise<void> {
         tableChips: seat.tableChips,
         ready: seat.ready,
         connected: false,
+        pendingChips: 0,
       })),
       spectators: new Map(),
       game: persisted.gameSnapshot as unknown as PokerGameState | undefined,
       handCounter: Number((persisted.gameSnapshot as any)?.handNumber ?? 0),
+      revealedPlayerIds: new Set(),
     };
 
     if (room.game) {
@@ -209,6 +234,7 @@ export async function createRuntimeRoom(user: AuthUser, input: RoomSettingsDto):
       actionTimeoutSeconds: input.actionTimeoutSeconds,
       creatorOnlyStart: input.creatorOnlyStart,
       allowSpectators: input.allowSpectators,
+      rabbitHunting: input.rabbitHunting,
       createdById: user.id,
     },
   });
@@ -223,9 +249,90 @@ export async function createRuntimeRoom(user: AuthUser, input: RoomSettingsDto):
     seats: [],
     spectators: new Map(),
     handCounter: 0,
+    revealedPlayerIds: new Set(),
   };
   rooms.set(room.id, room);
   return room;
+}
+
+export async function updateRoomSettings(
+  roomId: string,
+  user: AuthUser,
+  input: { smallBlind?: number; bigBlind?: number; actionTimeoutSeconds?: number; rabbitHunting?: boolean },
+): Promise<void> {
+  const room = getRuntimeRoom(roomId);
+  if (room.createdById !== user.id) {
+    throw new Error("只有房主可以修改房间设置");
+  }
+  if (room.game && room.game.phase !== "finished") {
+    throw new Error("牌局进行中不能修改设置");
+  }
+  if (input.smallBlind !== undefined) room.settings.smallBlind = input.smallBlind;
+  if (input.bigBlind !== undefined) room.settings.bigBlind = input.bigBlind;
+  if (input.actionTimeoutSeconds !== undefined) room.settings.actionTimeoutSeconds = input.actionTimeoutSeconds;
+  if (input.rabbitHunting !== undefined) room.settings.rabbitHunting = input.rabbitHunting;
+  if (room.settings.bigBlind < room.settings.smallBlind * 2) {
+    throw new Error("大盲至少应为小盲的 2 倍");
+  }
+  await prisma.room.update({
+    where: { id: roomId },
+    data: {
+      ...(input.smallBlind !== undefined ? { smallBlind: input.smallBlind } : {}),
+      ...(input.bigBlind !== undefined ? { bigBlind: input.bigBlind } : {}),
+      ...(input.actionTimeoutSeconds !== undefined ? { actionTimeoutSeconds: input.actionTimeoutSeconds } : {}),
+      ...(input.rabbitHunting !== undefined ? { rabbitHunting: input.rabbitHunting } : {}),
+    },
+  });
+  if (realtimeServer) {
+    await emitRoomState(realtimeServer, roomId);
+    await emitAllRoomLists(realtimeServer);
+  }
+}
+
+export async function getRoomLedger(roomId: string): Promise<{
+  userId: string;
+  displayName: string;
+  boughtIn: number;
+  cashedOut: number;
+  tableChips: number;
+  net: number;
+}[]> {
+  const room = getRuntimeRoom(roomId);
+  const entries = await prisma.virtualChipLedger.findMany({
+    where: {
+      roomId,
+      reason: { in: ["TABLE_BUY_IN", "TABLE_TOP_UP", "TABLE_WITHDRAW", "TABLE_LEAVE_RETURN"] },
+    },
+  });
+  const playerMap = new Map<string, { displayName: string; boughtIn: number; cashedOut: number; tableChips: number }>();
+  for (const entry of entries) {
+    const row = playerMap.get(entry.userId) ?? { displayName: "", boughtIn: 0, cashedOut: 0, tableChips: 0 };
+    if (entry.reason === "TABLE_BUY_IN" || entry.reason === "TABLE_TOP_UP") row.boughtIn += Math.abs(entry.delta);
+    else row.cashedOut += entry.delta;
+    playerMap.set(entry.userId, row);
+  }
+  // Fill names from current seats
+  for (const seat of room.seats) {
+    const row = playerMap.get(seat.userId);
+    if (row) { row.displayName = seat.displayName; row.tableChips = seat.tableChips + seat.pendingChips; }
+  }
+  // Fill missing names from DB for historical players
+  const missingIds = [...playerMap.entries()].filter(([, r]) => !r.displayName).map(([id]) => id);
+  if (missingIds.length > 0) {
+    const users = await prisma.user.findMany({ where: { id: { in: missingIds } }, select: { id: true, displayName: true } });
+    for (const u of users) {
+      const row = playerMap.get(u.id);
+      if (row) row.displayName = u.displayName;
+    }
+  }
+  return [...playerMap.entries()].map(([userId, row]) => ({
+    userId,
+    displayName: row.displayName || userId,
+    boughtIn: row.boughtIn,
+    cashedOut: row.cashedOut,
+    tableChips: row.tableChips,
+    net: row.cashedOut + row.tableChips - row.boughtIn,
+  }));
 }
 
 export async function sitDown(roomId: string, user: AuthUser, seatIndex: number, buyIn: number): Promise<void> {
@@ -284,14 +391,15 @@ export async function sitDown(roomId: string, user: AuthUser, seatIndex: number,
     tableChips: buyIn,
     ready: false,
     connected: true,
+    pendingChips: 0,
   });
   room.seats.sort((a, b) => a.seatIndex - b.seatIndex);
   clearOfflineCloseTimer(room.id);
 }
 
-export async function standUp(roomId: string, user: AuthUser): Promise<void> {
+export async function standUp(roomId: string, user: AuthUser, force = false): Promise<void> {
   const room = getRuntimeRoom(roomId);
-  if (room.game && room.game.phase !== "finished") {
+  if (!force && room.game && room.game.phase !== "finished") {
     throw new Error("一手牌进行中暂不能站起");
   }
   const seat = room.seats.find((item) => item.userId === user.id);
@@ -318,12 +426,11 @@ export async function standUp(roomId: string, user: AuthUser): Promise<void> {
 
 export async function addTableChips(roomId: string, user: AuthUser, amount: number): Promise<void> {
   const room = getRuntimeRoom(roomId);
-  assertCanAdjustSeatChips(room);
   const seat = room.seats.find((item) => item.userId === user.id);
   if (!seat) {
     throw new Error("只有已坐下玩家可以补码");
   }
-  if (seat.tableChips + amount > room.settings.maxBuyIn) {
+  if (seat.tableChips + seat.pendingChips + amount > room.settings.maxBuyIn) {
     throw new Error(`桌上筹码不能超过 ${room.settings.maxBuyIn}`);
   }
 
@@ -346,21 +453,25 @@ export async function addTableChips(roomId: string, user: AuthUser, amount: numb
     }),
   ]);
 
-  seat.tableChips += amount;
+  if (room.game && room.game.phase !== "finished") {
+    seat.pendingChips += amount;
+  } else {
+    seat.tableChips += amount;
+  }
 }
 
 export async function removeTableChips(roomId: string, user: AuthUser, amount: number): Promise<void> {
   const room = getRuntimeRoom(roomId);
-  assertCanAdjustSeatChips(room);
   const seat = room.seats.find((item) => item.userId === user.id);
   if (!seat) {
     throw new Error("只有已坐下玩家可以扣码");
   }
-  if (amount > seat.tableChips) {
+  const effective = seat.tableChips + seat.pendingChips;
+  if (amount > effective) {
     throw new Error("扣码数量不能大于桌上筹码");
   }
 
-  const leavesSeat = amount === seat.tableChips;
+  const leavesSeat = amount === effective;
   await prisma.$transaction([
     prisma.user.update({
       where: { id: user.id },
@@ -379,6 +490,8 @@ export async function removeTableChips(roomId: string, user: AuthUser, amount: n
 
   if (leavesSeat) {
     room.seats = room.seats.filter((item) => item.userId !== user.id);
+  } else if (room.game && room.game.phase !== "finished") {
+    seat.pendingChips -= amount;
   } else {
     seat.tableChips -= amount;
   }
@@ -390,7 +503,7 @@ export async function setReady(roomId: string, user: AuthUser, ready: boolean): 
   if (!seat) {
     throw new Error("只有已坐下玩家可以准备");
   }
-  if (seat.tableChips <= 0) {
+  if (seat.tableChips + seat.pendingChips <= 0) {
     throw new Error("桌上筹码不足");
   }
   seat.ready = ready;
@@ -454,9 +567,16 @@ export async function applyRuntimeAction(roomId: string, user: AuthUser, action:
     throw new Error("观战者不能执行游戏操作");
   }
   clearActionTimer(room.id);
+  const prevPhase = room.game?.phase;
   try {
     room.game = applyAction(room.game, user.id, action);
     syncStacksFromGame(room);
+
+    // Pause 1s when street advances so players can see the last action
+    if (prevPhase && prevPhase !== room.game.phase && ["flop", "turn", "river"].includes(room.game.phase)) {
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+
     if (room.game.phase === "revealing") {
       scheduleRunoutReveal(room.id);
     } else if (!(await settleFinishedRoomIfNeeded(room)) && room.game) {
@@ -489,6 +609,102 @@ export async function chooseRuntimeRunout(roomId: string, user: AuthUser, mode: 
   }
   await persistRoomSnapshot(room);
   scheduleActionTimer(room.id);
+}
+
+export async function addAIPlayersToRoom(roomId: string, _actor: Pick<AuthUser, "id">): Promise<{ added: number }> {
+  const room = getRuntimeRoom(roomId);
+  if (room.status === "CLOSED") throw new Error("房间已关闭");
+
+  // Find the next available seat
+  const takenSeats = new Set(room.seats.map((s) => s.seatIndex));
+  let seatIndex = 0;
+  while (takenSeats.has(seatIndex) && seatIndex < room.settings.maxPlayers) {
+    seatIndex++;
+  }
+  if (seatIndex >= room.settings.maxPlayers) throw new Error("没有空座位");
+
+  // Count existing AI players for display name
+  const existingAICount = room.seats.filter((s) => aiUserIds.has(s.userId)).length;
+  const displayName = `AI-机器人${existingAICount + 1}`;
+  const username = `ai_bot_${randomUUID().slice(0, 8)}`;
+  const passwordHash = await import("node:crypto").then((crypto) =>
+    crypto.createHash("sha256").update(randomUUID()).digest("hex"),
+  );
+
+  const aiUser = await prisma.user.create({
+    data: {
+      username,
+      displayName,
+      passwordHash,
+      role: "USER",
+      virtualChips: 1_000_000,
+      isAI: true,
+      stats: { create: {} },
+    },
+  });
+
+  aiUserIds.add(aiUser.id);
+
+  const authUser: AuthUser = {
+    id: aiUser.id,
+    username: aiUser.username,
+    displayName: aiUser.displayName,
+    role: aiUser.role as "USER" | "ADMIN",
+    virtualChips: aiUser.virtualChips,
+    isBanned: false,
+  };
+
+  // Use standard sitDown + setReady flow (same as human player)
+  await sitDown(roomId, authUser, seatIndex, room.settings.maxBuyIn);
+  await setReady(roomId, authUser, true);
+
+  if (realtimeServer) {
+    await emitRoomState(realtimeServer, roomId);
+    await emitAllRoomLists(realtimeServer);
+  }
+
+  return { added: 1 };
+}
+
+export async function removeAIPlayersFromRoom(roomId: string, _actor: Pick<AuthUser, "id">): Promise<{ removed: number }> {
+  const room = getRuntimeRoom(roomId);
+
+  const aiSeats = room.seats.filter((s) => aiUserIds.has(s.userId));
+  if (aiSeats.length === 0) return { removed: 0 };
+
+  for (const seat of aiSeats) {
+    aiUserIds.delete(seat.userId);
+
+    const authUser: AuthUser = {
+      id: seat.userId,
+      username: "",
+      displayName: seat.displayName,
+      role: "USER",
+      virtualChips: 0,
+      isBanned: false,
+    };
+
+    // Use standard standUp flow (same as human player), force during active hand
+    await standUp(roomId, authUser, true);
+  }
+
+  if (realtimeServer) {
+    await emitRoomState(realtimeServer, roomId);
+    await emitAllRoomLists(realtimeServer);
+  }
+
+  return { removed: aiSeats.length };
+}
+
+export function rabbitHuntRoom(roomId: string, user: AuthUser): { cards: Card[] } {
+  const room = getRuntimeRoom(roomId);
+  if (!room.game) throw new Error("当前没有牌局");
+  if (room.game.phase !== "finished") throw new Error("只能在牌局结束后使用");
+  if (!room.settings.rabbitHunting) throw new Error("该房间未开启 Rabbit Hunting");
+  if (room.game.communityCards.length >= 5) throw new Error("河牌已发出，没有更多公共牌");
+
+  const cards = rabbitHunt(room.game);
+  return { cards };
 }
 
 export async function closeRuntimeRoom(
@@ -580,6 +796,27 @@ export async function emitRoomState(io: Server, roomId: string): Promise<void> {
   for (const socket of sockets) {
     const user = socketUsers.get(socket.id);
     const publicGame = room.game ? getPublicGameStateForUser(room.game, user?.id) : undefined;
+    // Win-by-fold: hide winner cards from everyone (owner keeps them for click-to-reveal)
+    if (publicGame && room.game?.phase === "finished") {
+      const showdownEvals = room.game.showdownEvaluations;
+      const noShowdown = !showdownEvals || Object.keys(showdownEvals).length === 0;
+      if (noShowdown) {
+        for (const p of publicGame.players) {
+          if (p.status !== "folded" && p.holeCards && p.userId !== user?.id && !room.revealedPlayerIds.has(p.userId)) {
+            (p as any).holeCards = undefined;
+          }
+        }
+      }
+    }
+    // Inject hole cards for revealed players so all clients can see them
+    if (publicGame && room.revealedPlayerIds.size > 0) {
+      for (const p of publicGame.players) {
+        if (room.revealedPlayerIds.has(p.userId) && !p.holeCards) {
+          const enginePlayer = room.game!.players.find((ep) => ep.userId === p.userId);
+          if (enginePlayer) (p as any).holeCards = enginePlayer.holeCards.map((c) => ({ ...c }));
+        }
+      }
+    }
     socket.emit("room:state", {
       id: room.id,
       name: room.name,
@@ -739,6 +976,11 @@ async function autoCloseRoomIfAllPlayersOffline(roomId: string): Promise<void> {
   if (!room || room.status === "CLOSED" || room.seats.length === 0 || room.seats.some((seat) => seat.connected)) {
     return;
   }
+  // Never auto-close a room with an active (non-finished) game
+  if (room.game && room.game.phase !== "finished") {
+    scheduleOfflineCloseIfNeeded(roomId);
+    return;
+  }
 
   try {
     await closeRuntimeRoom(roomId, { id: room.createdById }, {
@@ -779,11 +1021,58 @@ function scheduleActionTimer(roomId: string): void {
     return;
   }
 
-  const delayMs = Math.max(0, Date.parse(clock.deadlineAt) - Date.now());
+  const isAI = aiUserIds.has(room.game.currentTurnUserId);
+  const thinkMs = isAI ? config.aiThinkSeconds * 1000 : Math.max(0, Date.parse(clock.deadlineAt) - Date.now());
+
   const timer = setTimeout(() => {
-    void handleActionTimeout(roomId, clock.userId, clock.deadlineAt);
-  }, delayMs + 25);
+    if (isAI) {
+      void handleAIAction(roomId, clock.userId);
+    } else {
+      void handleActionTimeout(roomId, clock.userId, clock.deadlineAt);
+    }
+  }, thinkMs + 25);
   actionTimers.set(roomId, timer);
+}
+
+async function handleAIAction(roomId: string, userId: string): Promise<void> {
+  const room = rooms.get(roomId);
+  if (!room?.game || room.game.currentTurnUserId !== userId) return;
+
+  const decision: AIDecision = await getAIDecision(room.game, userId);
+
+  const action = { type: decision.action, amount: decision.amount };
+
+  room.game.actionLog.push({
+    userId,
+    action: `ai-${action.type}${action.amount ? ` ${action.amount}` : ""}`,
+    phase: room.game.phase,
+    createdAt: new Date().toISOString(),
+  });
+
+  const prevPhase = room.game.phase;
+  try {
+    room.game = applyAction(room.game, userId, action);
+    syncStacksFromGame(room);
+
+    if (prevPhase !== room.game.phase && ["flop", "turn", "river"].includes(room.game.phase)) {
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+
+    if (room.game.phase === "revealing") {
+      scheduleRunoutReveal(room.id);
+    } else if (!(await settleFinishedRoomIfNeeded(room)) && room.game) {
+      reconcileActionClock(room.game, room.settings.actionTimeoutSeconds, new Date(), true);
+    }
+    await persistRoomSnapshot(room);
+    scheduleActionTimer(room.id);
+
+    if (realtimeServer) {
+      await emitRoomState(realtimeServer, roomId);
+    }
+  } catch (error) {
+    console.error("[AI] Action failed:", error);
+    scheduleActionTimer(room.id);
+  }
 }
 
 async function handleActionTimeout(roomId: string, userId: string, deadlineAt: string): Promise<void> {
@@ -841,8 +1130,13 @@ async function handleActionTimeout(roomId: string, userId: string, deadlineAt: s
 }
 
 async function beginRuntimeHand(room: RuntimeRoom, seats: RuntimeSeat[]): Promise<void> {
+  room.revealedPlayerIds.clear();
   for (const seat of seats) {
     seat.ready = true;
+    if (seat.pendingChips !== 0) {
+      seat.tableChips = Math.max(0, seat.tableChips + seat.pendingChips);
+      seat.pendingChips = 0;
+    }
   }
   room.handCounter += 1;
   room.game = startHand({
@@ -1029,7 +1323,7 @@ async function settleFinishedRoomIfNeeded(room: RuntimeRoom): Promise<boolean> {
 }
 
 async function standUpBustedSeats(room: RuntimeRoom): Promise<boolean> {
-  const bustedSeats = room.seats.filter((seat) => seat.tableChips <= 0);
+  const bustedSeats = room.seats.filter((seat) => seat.tableChips + seat.pendingChips <= 0);
   if (bustedSeats.length === 0) {
     return false;
   }

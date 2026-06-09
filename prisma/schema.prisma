@@ -49,6 +49,7 @@ model User {
   role                 UserRole           @default(USER)
   virtualChips         Int                @default(10000)
   isBanned             Boolean            @default(false)
+  isAI                 Boolean            @default(false)
   createdAt            DateTime           @default(now())
   updatedAt            DateTime           @updatedAt
   lastLoginAt          DateTime?
@@ -92,6 +93,7 @@ model Room {
   actionTimeoutSeconds Int         @default(30)
   creatorOnlyStart   Boolean       @default(false)
   allowSpectators    Boolean       @default(true)
+  rabbitHunting      Boolean       @default(true)
   createdById        String
   createdBy          User          @relation("RoomCreator", fields: [createdById], references: [id])
   seats              RoomSeat[]

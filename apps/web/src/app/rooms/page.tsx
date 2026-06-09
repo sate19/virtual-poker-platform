@@ -2,12 +2,13 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { Plus, RefreshCw } from "lucide-react";
-import type { RoomSummaryDto } from "@friends-poker/shared";
+import { Plus, RefreshCw, Trash2 } from "lucide-react";
+import type { AuthUser, RoomSummaryDto } from "@friends-poker/shared";
 import { apiFetch, getMe } from "../../lib/api";
 
 export default function RoomsPage() {
   const [rooms, setRooms] = useState<RoomSummaryDto[]>([]);
+  const [me, setMe] = useState<AuthUser>();
   const [error, setError] = useState("");
 
   async function load() {
@@ -17,10 +18,22 @@ export default function RoomsPage() {
       location.href = "/login";
       return;
     }
+    setMe(user);
     try {
       setRooms(await apiFetch<RoomSummaryDto[]>("/rooms"));
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载失败");
+    }
+  }
+
+  async function deleteRoom(roomId: string, name: string) {
+    if (!confirm("确定要删除房间 " + name + " 吗？")) return;
+    setError("");
+    try {
+      await apiFetch("/admin/rooms/" + roomId, { method: "DELETE" });
+      setRooms((prev) => prev.filter((r) => r.id !== roomId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "删除失败");
     }
   }
 
@@ -47,38 +60,50 @@ export default function RoomsPage() {
       <div className="error">{error}</div>
       <div className="grid">
         {rooms.map((room) => (
-          <Link className="card roomCard" href={`/table/${room.id}`} key={room.id}>
-            <h2>{room.name}</h2>
-            <div className="statRow">
-              <span className="muted">状态</span>
-              <strong>{room.status}</strong>
-            </div>
-            <div className="statRow">
-              <span className="muted">人数</span>
-              <strong>
-                {room.seatedCount}/{room.maxPlayers}
-              </strong>
-            </div>
-            <div className="statRow">
-              <span className="muted">盲注</span>
-              <strong>
-                {room.smallBlind}/{room.bigBlind}
-                {room.ante > 0 ? ` / 前注 ${room.ante}` : ""}
-              </strong>
-            </div>
-            <div className="statRow">
-              <span className="muted">开局人数</span>
-              <strong>{room.minPlayersToStart}+</strong>
-            </div>
-            <div className="statRow">
-              <span className="muted">行动时间</span>
-              <strong>{room.actionTimeoutSeconds} 秒</strong>
-            </div>
-            <div className="statRow">
-              <span className="muted">观战</span>
-              <strong>{room.spectatorCount}</strong>
-            </div>
-          </Link>
+          <div className="card roomCardWrapper" key={room.id}>
+            <Link className="roomCardLink" href={`/table/${room.id}`}>
+              <h2>{room.name}</h2>
+              <div className="statRow">
+                <span className="muted">状态</span>
+                <strong>{room.status}</strong>
+              </div>
+              <div className="statRow">
+                <span className="muted">人数</span>
+                <strong>{room.seatedCount}/{room.maxPlayers}</strong>
+              </div>
+              <div className="statRow">
+                <span className="muted">盲注</span>
+                <strong>
+                  {room.smallBlind}/{room.bigBlind}
+                  {room.ante > 0 ? ` / 前注 ${room.ante}` : ""}
+                </strong>
+              </div>
+              <div className="statRow">
+                <span className="muted">开局人数</span>
+                <strong>{room.minPlayersToStart}+</strong>
+              </div>
+              <div className="statRow">
+                <span className="muted">行动时间</span>
+                <strong>{room.actionTimeoutSeconds} 秒</strong>
+              </div>
+              <div className="statRow">
+                <span className="muted">观战</span>
+                <strong>{room.spectatorCount}</strong>
+              </div>
+            </Link>
+            {me?.role === "ADMIN" && (
+              <button
+                className="roomDeleteBtn"
+                title="删除房间"
+                onClick={(e) => {
+                  e.preventDefault();
+                  deleteRoom(room.id, room.name);
+                }}
+              >
+                <Trash2 size={16} />
+              </button>
+            )}
+          </div>
         ))}
       </div>
     </main>

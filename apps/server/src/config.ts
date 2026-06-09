@@ -8,7 +8,9 @@ export const config = {
   cookieName: "fp_session",
   cookieSecure: parseBoolean(process.env.SESSION_COOKIE_SECURE, process.env.WEB_ORIGIN?.startsWith("https://") ?? false),
   actionTimeoutSeconds: clamp(Number(process.env.ACTION_TIMEOUT_SECONDS ?? 30), 5, 300),
-  offlineRoomCloseGraceSeconds: clamp(Number(process.env.OFFLINE_ROOM_CLOSE_GRACE_SECONDS ?? 30), 5, 3600),
+  offlineRoomCloseGraceSeconds: clamp(Number(process.env.OFFLINE_ROOM_CLOSE_GRACE_SECONDS ?? 300), 30, 3600),
+  deepseekApiKey: process.env.DEEPSEEK_API_KEY ?? "",
+  aiThinkSeconds: clamp(Number(process.env.AI_THINK_SECONDS ?? 2), 1, 10),
 };
 
 function clamp(value: number, min: number, max: number): number {

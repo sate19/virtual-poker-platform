@@ -4,11 +4,12 @@ export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000
 
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const base = typeof window !== "undefined" ? "/api" : API_URL;
+  const hasBody = init?.body !== undefined && init?.body !== null;
   const response = await fetch(`${base}${path}`, {
     ...init,
     credentials: "include",
     headers: {
-      "Content-Type": "application/json",
+      ...(hasBody ? { "Content-Type": "application/json" } : {}),
       ...(init?.headers ?? {}),
     },
   });
