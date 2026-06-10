@@ -852,6 +852,9 @@ export async function emitRoomState(io: Server, roomId: string): Promise<void> {
       seats: room.seats,
       spectatorCount: room.spectators.size,
       nextHandReadyAt: room.nextHandReadyAt,
+      threePeatWinStreak: room.settings.miniGames?.threePeat
+        ? Object.fromEntries(room.threePeatWinStreak)
+        : undefined,
       game: publicGame,
     });
     if (publicGame) {
@@ -1273,6 +1276,14 @@ async function beginRuntimeHand(room: RuntimeRoom, seats: RuntimeSeat[]): Promis
   syncStacksFromGame(room);
   await persistRoomSnapshot(room);
   scheduleActionTimer(room.id);
+
+  // Bomb pot notification
+  if (isBombPotHand && realtimeServer) {
+    realtimeServer.to(room.id).emit("game:event", {
+      type: "miniGame",
+      events: [`bombPot:${room.handCounter}`],
+    });
+  }
 }
 
 function assertCanAdjustSeatChips(room: RuntimeRoom): void {
@@ -1427,12 +1438,17 @@ async function settleFinishedRoomIfNeeded(room: RuntimeRoom): Promise<boolean> {
   // --- Mini-game settlements ---
   const miniGames = room.settings.miniGames ?? {};
   const winners = findHandWinners(room.game);
+  const miniGameEvents: string[] = [];
 
   for (const winner of winners) {
+    const winnerSeat = room.seats.find((s) => s.userId === winner.userId);
+    const winnerName = winnerSeat?.displayName ?? winner.userId;
+
     // 7-2 Game: winner with 7-2 offsuit gets bounty from each seated player
     if (miniGames.sevenTwo && hasSevenTwoOffsuit(winner.holeCards)) {
       const bounty = room.settings.bigBlind * SEVEN_TWO_BOUNTY_MULTIPLIER;
       await distributeBounty(room, winner.userId, bounty, "7-2 游戏赏金");
+      miniGameEvents.push(`7-2:${winnerName}:${bounty}`);
     }
 
     // Three-peat: track and reward consecutive wins
@@ -1442,6 +1458,11 @@ async function settleFinishedRoomIfNeeded(room: RuntimeRoom): Promise<boolean> {
       if (streak >= 3) {
         await distributeBounty(room, winner.userId, THREE_PEAT_BOUNTY, "三连冠赏金");
         room.threePeatWinStreak.set(winner.userId, 0);
+        miniGameEvents.push(`threePeat:${winnerName}:${THREE_PEAT_BOUNTY}:${streak}`);
+      } else if (streak >= 2) {
+        miniGameEvents.push(`streak:${winnerName}:2`);
+      } else {
+        miniGameEvents.push(`streak:${winnerName}:1`);
       }
     }
   }
@@ -1457,7 +1478,20 @@ async function settleFinishedRoomIfNeeded(room: RuntimeRoom): Promise<boolean> {
 
   // Show One: log a marker so client knows winner should reveal
   if (miniGames.showOne && winners.length > 0) {
+    const winnerNames = winners.map((w) => {
+      const seat = room.seats.find((s) => s.userId === w.userId);
+      return seat?.displayName ?? w.userId;
+    });
+    miniGameEvents.push(`showOne:${winnerNames.join(",")}`);
     logMiniGame(room, "show-one-required", winners.map((w) => w.userId));
+  }
+
+  // Emit mini-game events to all clients in the room
+  if (miniGameEvents.length > 0 && realtimeServer) {
+    realtimeServer.to(room.id).emit("game:event", {
+      type: "miniGame",
+      events: miniGameEvents,
+    });
   }
 
   for (const seat of room.seats) {

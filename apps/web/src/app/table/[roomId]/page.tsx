@@ -50,6 +50,7 @@ interface RoomState {
   seats: RuntimeSeat[];
   spectatorCount: number;
   nextHandReadyAt?: string;
+  threePeatWinStreak?: Record<string, number>;
   game?: PublicPokerGameState;
 }
 
@@ -101,6 +102,8 @@ export default function TablePage() {
   const [showLedger, setShowLedger] = useState(false);
   const [showAIPanel, setShowAIPanel] = useState(false);
   const [rabbitCards, setRabbitCards] = useState<Card[] | null>(null);
+  const [miniGameBanners, setMiniGameBanners] = useState<Array<{ id: number; text: string; type: string }>>([]);
+  const bannerIdRef = useRef(0);
   const [aiLoading, setAiLoading] = useState(false);
   const [emojiPickerSeat, setEmojiPickerSeat] = useState<number | null>(null);
   const [emojiTab, setEmojiTab] = useState(0);
@@ -183,6 +186,19 @@ export default function TablePage() {
     activeSocket.on("game:rabbit-cards", (payload: any) => {
       setRabbitCards(payload.cards ?? []);
     });
+    activeSocket.on("game:event", (payload: any) => {
+      if (payload.type === "miniGame" && Array.isArray(payload.events)) {
+        for (const evt of payload.events as string[]) {
+          const banner = formatMiniGameBanner(evt);
+          if (banner) {
+            setMiniGameBanners((prev) => [
+              ...prev.slice(-2),
+              { id: bannerIdRef.current++, text: banner.text, type: banner.type },
+            ]);
+          }
+        }
+      }
+    });
     activeSocket.on("error", (payload) => {
       pendingMeRefreshRef.current = false;
       setError(payload.message);
@@ -220,6 +236,13 @@ export default function TablePage() {
     const timer = setTimeout(() => setEmojiFlights([]), 800);
     return () => clearTimeout(timer);
   }, [emojiFlights.length]);
+
+  // Auto-dismiss mini-game banners after 4 seconds
+  useEffect(() => {
+    if (miniGameBanners.length === 0) return;
+    const timer = setTimeout(() => setMiniGameBanners((prev) => prev.slice(1)), 4000);
+    return () => clearTimeout(timer);
+  }, [miniGameBanners.length]);
 
   useEffect(() => {
     if (room?.settings.maxBuyIn && buyIn === 0) setBuyIn(room.settings.maxBuyIn);
@@ -703,6 +726,16 @@ export default function TablePage() {
             </button>
           </div>
 
+          {miniGameBanners.length > 0 && (
+            <div className="miniGameBannerStack">
+              {miniGameBanners.map((banner) => (
+                <div className={`miniGameBanner miniGameBanner--${banner.type}`} key={banner.id}>
+                  {banner.text}
+                </div>
+              ))}
+            </div>
+          )}
+
           <div className={`pokerTable ${throwEmoji ? "throwMode" : ""}`} onClick={() => { if (throwEmoji) { setThrowEmoji(null); } }}>
             <div className="tableCornerMeta">
               <span>
@@ -871,6 +904,9 @@ export default function TablePage() {
                         {room?.game?.buttonSeatIndex === index && <span className="dealerChip">D</span>}
                         {blindLabel && <span className="blindChip">{blindLabel}</span>}
                         {room?.game?.straddleSeatIndex === index && <span className="straddleChip">STR</span>}
+                        {seat && room?.threePeatWinStreak?.[seat.userId] && room.threePeatWinStreak[seat.userId]! >= 2 && (
+                          <span className="streakChip">🔥 ×{room.threePeatWinStreak[seat.userId]}</span>
+                        )}
                       </div>
                       <div
                         className={`seatEmoji ${seat.emoji ? "hasEmoji" : ""}`}
@@ -1375,6 +1411,30 @@ const MINI_GAME_INFO: Record<keyof MiniGameSettings, { label: string; desc: stri
   showOne:   { label: "👁️ 亮一张", desc: "赢家必须展示至少一张手牌" },
   threePeat: { label: "🔥 三连冠", desc: "连续赢 3 手，全桌每人付你 100 筹码" },
 };
+
+/** Parse a mini-game event string into a banner { text, type } */
+function formatMiniGameBanner(evt: string): { text: string; type: string } | null {
+  const [type, ...rest] = evt.split(":");
+  switch (type) {
+    case "sevenTwo":
+      return { text: `🎯 7-2 游戏！${rest[0]} 用 7-2 不同花赢下，从全桌各拿了 ${rest[1]} 筹码！`, type: "sevenTwo" };
+    case "bombPot":
+      return { text: `💣 炸弹底池！第 ${rest[0]} 手触发，所有人上缴 3BB 直接开翻牌！`, type: "bombPot" };
+    case "threePeat":
+      return { text: `🔥 三连冠！${rest[0]} 连续赢了 ${rest[2]} 手，全桌每人付了 ${rest[1]} 筹码！`, type: "threePeat" };
+    case "streak": {
+      const streak = Number(rest[1]);
+      if (streak >= 2) {
+        return { text: `🔥 ${rest[0]} 已经连胜 ${streak} 手了！再赢就要三连冠了！`, type: "streak" };
+      }
+      return null;
+    }
+    case "showOne":
+      return { text: `👁️ 亮一张！${rest[0]} 赢了，必须展示手牌！`, type: "showOne" };
+    default:
+      return null;
+  }
+}
 
 function getActiveMiniGameLabels(miniGames?: MiniGameSettings): Array<{ key: string; label: string; desc: string }> {
   if (!miniGames) return [];
