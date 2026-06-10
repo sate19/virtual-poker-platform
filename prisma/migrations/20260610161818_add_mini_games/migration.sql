@@ -1,0 +1,6 @@
+-- AlterTable
+ALTER TABLE "Room" ADD COLUMN     "bombPot" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN     "sevenTwo" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN     "showOne" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN     "straddle" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN     "threePeat" BOOLEAN NOT NULL DEFAULT false;

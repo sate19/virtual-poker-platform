@@ -95,8 +95,8 @@ export default function RoomsPage() {
               </div>
               {getActiveMiniGameLabels(room.miniGames).length > 0 && (
                 <div className="miniGameTags">
-                  {getActiveMiniGameLabels(room.miniGames).map((label) => (
-                    <span className="miniGameTag" key={label}>{label}</span>
+                  {getActiveMiniGameLabels(room.miniGames).map((mg) => (
+                    <span className="miniGameTag" title={mg.desc} key={mg.key}>{mg.label}</span>
                   ))}
                 </div>
               )}
@@ -128,9 +128,12 @@ const MINI_GAME_LABELS: Record<keyof MiniGameSettings, string> = {
   threePeat: "🔥 三连冠",
 };
 
-function getActiveMiniGameLabels(miniGames?: MiniGameSettings): string[] {
+function getActiveMiniGameLabels(miniGames?: MiniGameSettings): Array<{ key: string; label: string; desc: string }> {
   if (!miniGames) return [];
   return Object.entries(miniGames)
     .filter(([, enabled]) => enabled)
-    .map(([key]) => MINI_GAME_LABELS[key as keyof MiniGameSettings] ?? key);
+    .map(([key]) => {
+      const mgKey = key as keyof MiniGameSettings;
+      return { key, label: MINI_GAME_LABELS[mgKey] ?? key, desc: MINI_GAME_LABELS[mgKey] ?? key };
+    });
 }

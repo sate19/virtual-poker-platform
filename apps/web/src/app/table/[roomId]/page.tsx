@@ -717,7 +717,9 @@ export default function TablePage() {
               <span>{room ? `${room.settings.minPlayersToStart}+ 人开局 · ${room.settings.actionTimeoutSeconds} 秒行动` : ""}</span>
               {room?.settings.miniGames && getActiveMiniGameLabels(room.settings.miniGames).length > 0 && (
                 <span className="miniGameInline">
-                  {getActiveMiniGameLabels(room.settings.miniGames).join(" · ")}
+                  {getActiveMiniGameLabels(room.settings.miniGames).map((mg) => (
+                    <span className="miniGameTag" data-tooltip={mg.desc} key={mg.key}>{mg.label}</span>
+                  ))}
                 </span>
               )}
             </div>
@@ -1366,19 +1368,22 @@ function phaseLabel(phase: string): string {
   return labels[phase] ?? phase;
 }
 
-const MINI_GAME_LABELS: Record<keyof MiniGameSettings, string> = {
-  sevenTwo: "🎯 7-2",
-  bombPot: "💣 炸弹底池",
-  straddle: "🎲 抓头",
-  showOne: "👁 亮一张",
-  threePeat: "🔥 三连冠",
+const MINI_GAME_INFO: Record<keyof MiniGameSettings, { label: string; desc: string }> = {
+  sevenTwo:  { label: "🎯 7-2",  desc: "用 7-2 不同花色赢下，全桌每人付你 1BB 赏金" },
+  bombPot:   { label: "💣 炸弹底池", desc: "每 5 手触发，所有玩家强制投 3BB 直接开翻牌，跳过翻牌前下注" },
+  straddle:  { label: "🎲 抓头", desc: "大盲左边玩家可投入 2BB 活抓，翻牌前最后行动" },
+  showOne:   { label: "👁️ 亮一张", desc: "赢家必须展示至少一张手牌" },
+  threePeat: { label: "🔥 三连冠", desc: "连续赢 3 手，全桌每人付你 100 筹码" },
 };
 
-function getActiveMiniGameLabels(miniGames?: MiniGameSettings): string[] {
+function getActiveMiniGameLabels(miniGames?: MiniGameSettings): Array<{ key: string; label: string; desc: string }> {
   if (!miniGames) return [];
   return Object.entries(miniGames)
     .filter(([, enabled]) => enabled)
-    .map(([key]) => MINI_GAME_LABELS[key as keyof MiniGameSettings] ?? key);
+    .map(([key]) => {
+      const info = MINI_GAME_INFO[key as keyof MiniGameSettings];
+      return { key, label: info?.label ?? key, desc: info?.desc ?? key };
+    });
 }
 
 function actionLabel(action?: string): string {
