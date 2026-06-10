@@ -1059,6 +1059,28 @@ button:disabled {
   white-space: nowrap;
 }
 
+.revealAllBtn {
+  position: absolute;
+  bottom: -22px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #6366f1;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 1px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  z-index: 5;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+
+.revealAllBtn:hover {
+  background: #4f46e5;
+}
+
 .miniCard {
   width: 46px;
   height: 64px;

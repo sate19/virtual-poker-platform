@@ -51,6 +51,7 @@ interface RoomState {
   spectatorCount: number;
   nextHandReadyAt?: string;
   threePeatWinStreak?: Record<string, number>;
+  revealedCards?: Record<string, number[]>;
   game?: PublicPokerGameState;
 }
 
@@ -120,7 +121,6 @@ export default function TablePage() {
   const [allinConfirm, setAllinConfirm] = useState(false);
   const [preFold, setPreFold] = useState(false);
   const [preStand, setPreStand] = useState(false);
-  const [revealedSelf, setRevealedSelf] = useState(false);
   const [ledger, setLedger] = useState<{ userId: string; displayName: string; boughtIn: number; cashedOut: number; tableChips: number; net: number }[]>([]);
   const pendingMeRefreshRef = useRef(false);
   const preFoldTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -440,7 +440,6 @@ export default function TablePage() {
     if (phase === "finished" && prevPhaseRef.current && prevPhaseRef.current !== "finished") {
       if (winners.length > 0) playSoundFiltered("win");
       setPreFold(false);
-      setRevealedSelf(false);
       // Coin fly animation
       const potEl = potRef.current;
       if (potEl && winners.length > 0) {
@@ -876,23 +875,31 @@ export default function TablePage() {
                           {equity.tiePercent > 0 ? ` · 平分 ${formatPercent(equity.tiePercent)}` : ""}
                         </div>
                       )}
-                      <div className={`seatCards ${player?.status === "folded" && seat.userId !== me?.id ? "seatCardsFolded" : ""}`}>
+                      <div className={`seatCards ${player?.status === "folded" && !isFinished ? "seatCardsFolded" : ""}`}>
                         {preStand && seat.userId === me?.id ? (
                           <span className="readyInBadge">Mamba out</span>
+                        ) : isFinished && player ? (
+                          // --- Finished: per-card reveal system ---
+                          <PerCardReveal
+                            room={room}
+                            player={player}
+                            seat={seat}
+                            me={me}
+                            socket={socket}
+                            isShowdownHand={!!isShowdownHand}
+                            winnerBestCards={winnerBestCards}
+                            roomId={roomId}
+                          />
                         ) : player?.holeCards?.length ? (
-                          player.holeCards.map((card, cardIndex) => {
-                            const canReveal = isFinished && seat.userId === me?.id && !revealedSelf &&
-                              (player?.status === "folded" || (!isShowdownHand && winnerIds.has(seat.userId)));
-                            return (
-                              <MiniCard
-                                key={cardIndex}
-                                card={card as Card}
-                                dimmed={isShowdownHand && winnerBestCards.size > 0 ? !winnerBestCards.has(`${(card as Card).rank}${(card as Card).suit}`) : undefined}
-                                rankLabel={getBestJokerRank(card as Card, [...(player.holeCards ?? []), ...(room?.game?.communityCards ?? [])] as Card[])}
-                                onClick={canReveal ? () => { setRevealedSelf(true); socket?.emit("player:reveal", { roomId }); } : undefined}
-                              />
-                            );
-                          })
+                          // --- In-hand: show own cards or showdown cards ---
+                          player.holeCards.map((card, cardIndex) => (
+                            <MiniCard
+                              key={cardIndex}
+                              card={card as Card}
+                              dimmed={isShowdownHand && winnerBestCards.size > 0 ? !winnerBestCards.has(`${(card as Card).rank}${(card as Card).suit}`) : undefined}
+                              rankLabel={getBestJokerRank(card as Card, [...(player.holeCards ?? []), ...(room?.game?.communityCards ?? [])] as Card[])}
+                            />
+                          ))
                         ) : player ? (
                           <><div className="miniCard cardBack">?</div><div className="miniCard cardBack">?</div></>
                         ) : seat.ready ? (
@@ -1564,6 +1571,72 @@ const PokerCard = React.memo(function PokerCard({ card, flipping, flipDelay = 0,
 });
 
 const suitSymbol: Record<string, string> = { s: "♠", h: "♥", d: "♦", c: "♣", x: "" };
+
+/** Per-card reveal UI shown when a hand finishes.
+ *  - Owner sees their own cards and can click to reveal each to the table.
+ *  - Others see only the cards that have been individually revealed. */
+function PerCardReveal({
+  room, player, seat, me, socket, isShowdownHand, winnerBestCards, roomId,
+}: {
+  room?: RoomState;
+  player: PublicEnginePlayer;
+  seat: RuntimeSeat;
+  me?: AuthUser;
+  socket?: TypedSocket;
+  isShowdownHand: boolean;
+  winnerBestCards: Set<string>;
+  roomId: string;
+}) {
+  const isOwner = seat.userId === me?.id;
+  const revealedIndices = room?.revealedCards?.[seat.userId] ?? [];
+  const engineHoleCards: (Card | undefined)[] = player.holeCards as Card[] ?? [];
+
+  // Owner always sees both. Others see via revealedCards or showdown.
+  const visibleCard = (cardIdx: number): Card | undefined => {
+    if (isOwner) return engineHoleCards[cardIdx];
+    if (isShowdownHand) return engineHoleCards[cardIdx]; // showdown → everyone sees all
+    if (revealedIndices.includes(cardIdx)) return engineHoleCards[cardIdx];
+    return undefined;
+  };
+
+  const card0 = visibleCard(0);
+  const card1 = visibleCard(1);
+  const allRevealed = revealedIndices.length >= 2;
+
+  const revealCard = (cardIndex: number) => {
+    if (!isOwner) return;
+    socket?.emit("player:reveal" as any, { roomId, cardIndex });
+  };
+
+  const revealAll = () => {
+    if (!isOwner) return;
+    socket?.emit("player:reveal" as any, { roomId });
+  };
+
+  const cardKey = (c: Card | undefined): string => c ? `${c.rank}${c.suit}` : "";
+
+  return (
+    <>
+      <MiniCard
+        card={card0}
+        dimmed={isShowdownHand && winnerBestCards.size > 0 && card0 ? !winnerBestCards.has(cardKey(card0)) : undefined}
+        rankLabel={card0 ? getBestJokerRank(card0, [...engineHoleCards.filter(Boolean) as Card[], ...(room?.game?.communityCards ?? [])]) : undefined}
+        onClick={isOwner && !allRevealed ? () => revealCard(0) : undefined}
+      />
+      <MiniCard
+        card={card1}
+        dimmed={isShowdownHand && winnerBestCards.size > 0 && card1 ? !winnerBestCards.has(cardKey(card1)) : undefined}
+        rankLabel={card1 ? getBestJokerRank(card1, [...engineHoleCards.filter(Boolean) as Card[], ...(room?.game?.communityCards ?? [])]) : undefined}
+        onClick={isOwner && !allRevealed ? () => revealCard(1) : undefined}
+      />
+      {isOwner && !allRevealed && (
+        <button className="revealAllBtn" onClick={revealAll} title="向全桌展示所有手牌">
+          Show
+        </button>
+      )}
+    </>
+  );
+}
 
 const MiniCard = React.memo(function MiniCard({ card, dimmed, rankLabel, onClick }: { card?: Card; dimmed?: boolean; rankLabel?: string; onClick?: () => void }) {
   if (!card) return <div className="miniCard cardBack">?</div>;

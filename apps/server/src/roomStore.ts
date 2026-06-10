@@ -41,7 +41,8 @@ export interface RuntimeRoom {
   game?: PokerGameState;
   handCounter: number;
   nextHandReadyAt?: string;
-  revealedPlayerIds: Set<string>;
+  /** Track which cards each user has revealed. userId → Set of card indices (0, 1) */
+  revealedCards: Map<string, Set<number>>;
   /** Track consecutive wins per user for three-peat mini-game */
   threePeatWinStreak: Map<string, number>;
 }
@@ -164,7 +165,7 @@ export async function hydrateRoomsFromDatabase(): Promise<void> {
       spectators: new Map(),
       game: persisted.gameSnapshot as unknown as PokerGameState | undefined,
       handCounter: Number((persisted.gameSnapshot as any)?.handNumber ?? 0),
-      revealedPlayerIds: new Set(),
+      revealedCards: new Map(),
       threePeatWinStreak: new Map(),
     };
 
@@ -275,7 +276,7 @@ export async function createRuntimeRoom(user: AuthUser, input: RoomSettingsDto):
     seats: [],
     spectators: new Map(),
     handCounter: 0,
-    revealedPlayerIds: new Set(),
+    revealedCards: new Map(),
     threePeatWinStreak: new Map(),
   };
   rooms.set(room.id, room);
@@ -823,24 +824,33 @@ export async function emitRoomState(io: Server, roomId: string): Promise<void> {
   for (const socket of sockets) {
     const user = socketUsers.get(socket.id);
     const publicGame = room.game ? getPublicGameStateForUser(room.game, user?.id) : undefined;
-    // Win-by-fold: hide winner cards from everyone (owner keeps them for click-to-reveal)
+    // Per-card reveal system: after hand finishes, hide non-owner cards then
+    // selectively re-inject individually revealed cards from revealedCards map.
     if (publicGame && room.game?.phase === "finished") {
       const showdownEvals = room.game.showdownEvaluations;
       const noShowdown = !showdownEvals || Object.keys(showdownEvals).length === 0;
-      if (noShowdown) {
-        for (const p of publicGame.players) {
-          if (p.status !== "folded" && p.holeCards && p.userId !== user?.id && !room.revealedPlayerIds.has(p.userId)) {
-            (p as any).holeCards = undefined;
-          }
-        }
-      }
-    }
-    // Inject hole cards for revealed players so all clients can see them
-    if (publicGame && room.revealedPlayerIds.size > 0) {
+
       for (const p of publicGame.players) {
-        if (room.revealedPlayerIds.has(p.userId) && !p.holeCards) {
-          const enginePlayer = room.game!.players.find((ep) => ep.userId === p.userId);
-          if (enginePlayer) (p as any).holeCards = enginePlayer.holeCards.map((c) => ({ ...c }));
+        const isOwner = p.userId === user?.id;
+        const revealedSet = room.revealedCards.get(p.userId);
+        const revealedBoth = revealedSet && revealedSet.size >= 2;
+
+        // Owner always sees their own cards. Fully revealed players' cards shown to everyone.
+        if (isOwner || revealedBoth) continue;
+
+        const enginePlayer = room.game!.players.find((ep) => ep.userId === p.userId);
+        if (!enginePlayer) continue;
+
+        // Build per-card reveal: only show individually revealed card indices
+        if (revealedSet && revealedSet.size > 0) {
+          const partialCards: (Card | undefined)[] = enginePlayer.holeCards.map((c, i) =>
+            revealedSet.has(i) ? { ...c } : undefined,
+          );
+          (p as any).holeCards = partialCards;
+        } else if (noShowdown) {
+          // No cards revealed and win-by-fold: hide all (unless it's showdown where
+          // getPublicGameStateForUser already shows them)
+          (p as any).holeCards = undefined;
         }
       }
     }
@@ -854,6 +864,11 @@ export async function emitRoomState(io: Server, roomId: string): Promise<void> {
       nextHandReadyAt: room.nextHandReadyAt,
       threePeatWinStreak: room.settings.miniGames?.threePeat
         ? Object.fromEntries(room.threePeatWinStreak)
+        : undefined,
+      revealedCards: room.revealedCards.size > 0
+        ? Object.fromEntries(
+            [...room.revealedCards.entries()].map(([uid, indices]) => [uid, [...indices]]),
+          )
         : undefined,
       game: publicGame,
     });
@@ -1229,7 +1244,7 @@ const SEVEN_TWO_BOUNTY_MULTIPLIER = 1;
 const THREE_PEAT_BOUNTY = 100;
 
 async function beginRuntimeHand(room: RuntimeRoom, seats: RuntimeSeat[]): Promise<void> {
-  room.revealedPlayerIds.clear();
+  room.revealedCards.clear();
   for (const seat of seats) {
     seat.ready = true;
     if (seat.pendingChips !== 0) {
@@ -1476,14 +1491,21 @@ async function settleFinishedRoomIfNeeded(room: RuntimeRoom): Promise<boolean> {
     }
   }
 
-  // Show One: log a marker so client knows winner should reveal
+  // Show One: system auto-reveals one random card of each winner
   if (miniGames.showOne && winners.length > 0) {
     const winnerNames = winners.map((w) => {
       const seat = room.seats.find((s) => s.userId === w.userId);
       return seat?.displayName ?? w.userId;
     });
     miniGameEvents.push(`showOne:${winnerNames.join(",")}`);
-    logMiniGame(room, "show-one-required", winners.map((w) => w.userId));
+    // Auto-reveal one random card per winner
+    for (const winner of winners) {
+      const randomCardIndex = Math.random() < 0.5 ? 0 : 1;
+      if (!room.revealedCards.has(winner.userId)) {
+        room.revealedCards.set(winner.userId, new Set());
+      }
+      room.revealedCards.get(winner.userId)!.add(randomCardIndex);
+    }
   }
 
   // Emit mini-game events to all clients in the room
@@ -1605,21 +1627,6 @@ async function distributeBounty(
         roomId: room.id,
       },
     ],
-  });
-}
-
-/** Log a mini-game event in the game's action log */
-function logMiniGame(
-  room: RuntimeRoom,
-  action: string,
-  userIds: string[],
-): void {
-  if (!room.game) return;
-  room.game.actionLog.push({
-    userId: userIds[0],
-    action,
-    phase: room.game.phase,
-    createdAt: new Date().toISOString(),
   });
 }
 
