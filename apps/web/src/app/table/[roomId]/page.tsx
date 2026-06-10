@@ -4,7 +4,7 @@ import { useParams } from "next/navigation";
 import React, { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { io, type Socket } from "socket.io-client";
 import { Bot, CircleDollarSign, DoorOpen, Menu, NotebookText, Play, Rabbit, Send, UserRoundPlus, Volume2 } from "lucide-react";
-import type { AuthUser, ChatMessageDto, ClientToServerEvents, RunoutMode, ServerToClientEvents } from "@friends-poker/shared";
+import type { AuthUser, ChatMessageDto, ClientToServerEvents, MiniGameSettings, RunoutMode, ServerToClientEvents } from "@friends-poker/shared";
 import {
   evaluateHand,
   type Card,
@@ -44,6 +44,8 @@ interface RoomState {
     actionTimeoutSeconds: number;
     creatorOnlyStart: boolean;
     rabbitHunting: boolean;
+    deckType?: string;
+    miniGames?: MiniGameSettings;
   };
   seats: RuntimeSeat[];
   spectatorCount: number;
@@ -703,13 +705,21 @@ export default function TablePage() {
 
           <div className={`pokerTable ${throwEmoji ? "throwMode" : ""}`} onClick={() => { if (throwEmoji) { setThrowEmoji(null); } }}>
             <div className="tableCornerMeta">
-              <span>NLH</span>
+              <span>
+                {room?.settings.deckType === "royal-war" ? "👑RW" : "NLH"}
+                {room?.game?.bombPot && " 💣"}
+              </span>
               <strong>
                 {room
                   ? `${room.settings.smallBlind} / ${room.settings.bigBlind}${room.settings.ante > 0 ? ` + ${room.settings.ante}` : ""}`
                   : "-- / --"}
               </strong>
               <span>{room ? `${room.settings.minPlayersToStart}+ 人开局 · ${room.settings.actionTimeoutSeconds} 秒行动` : ""}</span>
+              {room?.settings.miniGames && getActiveMiniGameLabels(room.settings.miniGames).length > 0 && (
+                <span className="miniGameInline">
+                  {getActiveMiniGameLabels(room.settings.miniGames).join(" · ")}
+                </span>
+              )}
             </div>
             <div className="centerPot">
               <div className="birthdayBanner"><span className="birthdayMarquee">🎂 康师傅生日快乐！ 🎂 康师傅生日快乐！ 🎂</span></div>
@@ -858,6 +868,7 @@ export default function TablePage() {
                       <div className="seatMarkers">
                         {room?.game?.buttonSeatIndex === index && <span className="dealerChip">D</span>}
                         {blindLabel && <span className="blindChip">{blindLabel}</span>}
+                        {room?.game?.straddleSeatIndex === index && <span className="straddleChip">STR</span>}
                       </div>
                       <div
                         className={`seatEmoji ${seat.emoji ? "hasEmoji" : ""}`}
@@ -1353,6 +1364,21 @@ function phaseLabel(phase: string): string {
     finished: "本手结束",
   };
   return labels[phase] ?? phase;
+}
+
+const MINI_GAME_LABELS: Record<keyof MiniGameSettings, string> = {
+  sevenTwo: "🎯 7-2",
+  bombPot: "💣 炸弹底池",
+  straddle: "🎲 抓头",
+  showOne: "👁 亮一张",
+  threePeat: "🔥 三连冠",
+};
+
+function getActiveMiniGameLabels(miniGames?: MiniGameSettings): string[] {
+  if (!miniGames) return [];
+  return Object.entries(miniGames)
+    .filter(([, enabled]) => enabled)
+    .map(([key]) => MINI_GAME_LABELS[key as keyof MiniGameSettings] ?? key);
 }
 
 function actionLabel(action?: string): string {

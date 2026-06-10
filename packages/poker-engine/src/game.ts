@@ -33,6 +33,8 @@ export interface StartHandInput {
   handNumber?: number;
   deckType?: DeckType;
   random?: () => number;
+  bombPotAmount?: number;
+  straddle?: boolean;
 }
 
 export function startHand(input: StartHandInput): PokerGameState {
@@ -43,18 +45,22 @@ export function startHand(input: StartHandInput): PokerGameState {
     throw new Error("至少需要 2 名已准备玩家才能开始牌局");
   }
 
+  const occupied = activePlayers.map((player) => player.seatIndex);
   const buttonSeatIndex = nextOccupiedSeat(
     input.previousButtonSeatIndex ?? activePlayers[activePlayers.length - 1]!.seatIndex,
-    activePlayers.map((player) => player.seatIndex),
+    occupied,
   );
+
+  const isBombPot = (input.bombPotAmount ?? 0) > 0;
   const headsUp = activePlayers.length === 2;
-  const smallBlindSeatIndex = headsUp
-    ? buttonSeatIndex
-    : nextOccupiedSeat(buttonSeatIndex, activePlayers.map((player) => player.seatIndex));
-  const bigBlindSeatIndex = nextOccupiedSeat(
-    smallBlindSeatIndex,
-    activePlayers.map((player) => player.seatIndex),
-  );
+  const smallBlindSeatIndex = isBombPot
+    ? -1
+    : headsUp
+      ? buttonSeatIndex
+      : nextOccupiedSeat(buttonSeatIndex, occupied);
+  const bigBlindSeatIndex = isBombPot
+    ? -1
+    : nextOccupiedSeat(smallBlindSeatIndex, occupied);
 
   let deck = shuffleDeck(createDeck(input.deckType ?? "standard"), input.random);
   const players: EnginePlayer[] = activePlayers.map((player) => ({
@@ -67,7 +73,11 @@ export function startHand(input: StartHandInput): PokerGameState {
     actedThisStreet: false,
   }));
 
-  const dealOrder = orderedFrom(smallBlindSeatIndex, players);
+  // Deal hole cards starting from button+1 (or SB for normal)
+  const dealStartSeat = isBombPot
+    ? nextOccupiedSeat(buttonSeatIndex, occupied)
+    : smallBlindSeatIndex;
+  const dealOrder = orderedFrom(dealStartSeat, players);
   for (let round = 0; round < 2; round += 1) {
     for (const player of dealOrder) {
       const result = dealOne(deck);
@@ -86,6 +96,7 @@ export function startHand(input: StartHandInput): PokerGameState {
     buttonSeatIndex,
     smallBlindSeatIndex,
     bigBlindSeatIndex,
+    bombPot: isBombPot || undefined,
     currentTurnUserId: undefined,
     currentBet: 0,
     minRaise: input.bigBlind,
@@ -99,9 +110,47 @@ export function startHand(input: StartHandInput): PokerGameState {
     handNumber: input.handNumber ?? 1,
   };
 
+  // --- Bomb Pot: all players ante the bomb amount, skip to flop ---
+  if (isBombPot) {
+    postAntes(state, input.ante ?? 0);
+    const bombAmount = input.bombPotAmount!;
+    for (const player of state.players) {
+      commitChips(player, bombAmount);
+      log(state, player.userId, "bomb-pot-ante", bombAmount);
+    }
+    state.phase = "flop";
+    burnAndDeal(state, 3);
+    state.currentBet = 0;
+    state.currentTurnUserId = nextActionUserId(
+      state,
+      nextOccupiedSeat(buttonSeatIndex, occupiedSeats(state)),
+    );
+    return state;
+  }
+
+  // --- Normal blind posting ---
   postAntes(state, input.ante ?? 0);
   postBlind(state, smallBlindSeatIndex, input.smallBlind, "post-small-blind");
   postBlind(state, bigBlindSeatIndex, input.bigBlind, "post-big-blind");
+
+  // --- Straddle: player left of BB posts 2x BB as live straddle ---
+  if (input.straddle) {
+    const straddleSeatIndex = nextOccupiedSeat(bigBlindSeatIndex, occupied);
+    // Only allow straddle if there are at least 3 players (need UTG after straddle)
+    if (straddleSeatIndex !== buttonSeatIndex) {
+      const straddleAmount = input.bigBlind * 2;
+      postBlind(state, straddleSeatIndex, straddleAmount, "post-straddle");
+      state.straddleSeatIndex = straddleSeatIndex;
+      state.currentBet = Math.max(...state.players.map((player) => player.committedThisStreet));
+      // First to act is seat left of straddle
+      state.currentTurnUserId = nextActionUserId(
+        state,
+        nextOccupiedSeat(straddleSeatIndex, occupiedSeats(state)),
+      );
+      return state;
+    }
+  }
+
   state.currentBet = Math.max(...state.players.map((player) => player.committedThisStreet));
   state.currentTurnUserId = nextActionUserId(state, nextOccupiedSeat(bigBlindSeatIndex, occupiedSeats(state)));
   return state;
@@ -239,6 +288,8 @@ export function getPublicGameStateForUser(
     buttonSeatIndex: state.buttonSeatIndex,
     smallBlindSeatIndex: state.smallBlindSeatIndex,
     bigBlindSeatIndex: state.bigBlindSeatIndex,
+    straddleSeatIndex: state.straddleSeatIndex,
+    bombPot: state.bombPot,
     currentTurnUserId: state.currentTurnUserId,
     currentBet: state.currentBet,
     minRaise: state.minRaise,

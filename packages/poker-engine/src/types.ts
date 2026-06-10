@@ -147,6 +147,8 @@ export interface PokerGameState {
   buttonSeatIndex: number;
   smallBlindSeatIndex: number;
   bigBlindSeatIndex: number;
+  straddleSeatIndex?: number;
+  bombPot?: boolean;
   currentTurnUserId?: string;
   currentBet: number;
   minRaise: number;
@@ -190,6 +192,8 @@ export interface PublicPokerGameState {
   buttonSeatIndex: number;
   smallBlindSeatIndex: number;
   bigBlindSeatIndex: number;
+  straddleSeatIndex?: number;
+  bombPot?: boolean;
   currentTurnUserId?: string;
   currentBet: number;
   minRaise: number;
