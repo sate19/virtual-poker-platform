@@ -197,10 +197,21 @@ export function registerSocket(app: FastifyInstance): Server<ClientToServerEvent
 
     socket.on("player:reveal", async (payload) => {
       await guarded(socket, async () => {
-        const { roomId } = roomIdSchema.parse(payload);
-        const room = getRuntimeRoom(roomId);
-        room.revealedPlayerIds.add(user.id);
-        await emitRoomState(io, roomId);
+        const input = roomIdSchema.extend({ cardIndex: z.number().int().min(0).max(1).optional() }).parse(payload);
+        const room = getRuntimeRoom(input.roomId);
+        if (!room.revealedCards.has(user.id)) {
+          room.revealedCards.set(user.id, new Set());
+        }
+        const revealed = room.revealedCards.get(user.id)!;
+        if (input.cardIndex !== undefined) {
+          // Reveal a single card
+          revealed.add(input.cardIndex);
+        } else {
+          // Reveal both cards (no cardIndex = reveal all)
+          revealed.add(0);
+          revealed.add(1);
+        }
+        await emitRoomState(io, input.roomId);
       });
     });
 

@@ -87,7 +87,7 @@ describe("room store seating", () => {
       ],
       spectators: new Map(),
       handCounter: 1,
-      revealedPlayerIds: new Set(),
+      revealedCards: new Map(),
       threePeatWinStreak: new Map(),
     };
 
