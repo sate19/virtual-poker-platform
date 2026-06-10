@@ -960,7 +960,14 @@ async function handleHandPauseElapsed(roomId: string): Promise<void> {
   const removedBustedSeats = await standUpBustedSeats(latest);
   const nextHandSeats = latest.seats.filter((seat) => seat.tableChips > 0);
   if (nextHandSeats.length >= latest.settings.minPlayersToStart) {
-    await beginRuntimeHand(latest, nextHandSeats);
+    try {
+      await beginRuntimeHand(latest, nextHandSeats);
+    } catch (err) {
+      console.error("Auto-next hand failed:", err);
+      // Re-schedule the timer to retry after a short delay
+      latest.nextHandReadyAt = new Date(Date.now() + 3000).toISOString();
+      scheduleHandPauseTimer(roomId);
+    }
     if (realtimeServer) {
       await emitRoomState(realtimeServer, roomId);
       await emitAllRoomLists(realtimeServer);
@@ -1234,9 +1241,16 @@ async function beginRuntimeHand(room: RuntimeRoom, seats: RuntimeSeat[]): Promis
   const bombPotAmount = isBombPotHand ? room.settings.bigBlind * BOMB_POT_ANTE_MULTIPLIER : undefined;
   const useStraddle = room.settings.miniGames?.straddle ?? false;
 
+  const activePlayers = seats.filter((s) => s.tableChips > 0);
+  if (activePlayers.length < 2) {
+    room.handCounter -= 1; // revert since no hand was started
+    console.warn("Not enough players to start hand:", activePlayers.length);
+    return;
+  }
+
   room.game = startHand({
     handId: randomUUID(),
-    players: seats.map((seat) => ({
+    players: activePlayers.map((seat) => ({
       userId: seat.userId,
       displayName: seat.displayName,
       seatIndex: seat.seatIndex,
