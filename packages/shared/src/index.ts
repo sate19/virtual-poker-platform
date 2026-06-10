@@ -27,6 +27,7 @@ export interface RoomSettingsDto {
   creatorOnlyStart: boolean;
   allowSpectators: boolean;
   rabbitHunting: boolean;
+  deckType: string;
 }
 
 export interface RoomSummaryDto {
@@ -42,6 +43,8 @@ export interface RoomSummaryDto {
   ante: number;
   actionTimeoutSeconds: number;
   creatorOnlyStart: boolean;
+  deckType: string;
+  createdById: string;
   createdAt: string;
 }
 
@@ -127,6 +130,7 @@ export interface ClientToServerEvents {
   "room:create": (payload: CreateRoomPayload) => void;
   "room:sit": (payload: SitPayload) => void;
   "room:stand": (payload: StandPayload) => void;
+  "room:kick": (payload: { roomId: string; targetUserId: string }) => void;
   "room:ready": (payload: ReadyPayload) => void;
   "room:chips:add": (payload: AdjustTableChipsPayload) => void;
   "room:chips:remove": (payload: AdjustTableChipsPayload) => void;
@@ -161,6 +165,7 @@ export const SOCKET_EVENTS = {
     "room:create",
     "room:sit",
     "room:stand",
+    "room:kick",
     "room:ready",
     "room:chips:add",
     "room:chips:remove",

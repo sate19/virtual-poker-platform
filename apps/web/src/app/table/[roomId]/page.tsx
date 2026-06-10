@@ -1,21 +1,19 @@
 "use client";
 
 import { useParams } from "next/navigation";
-import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import React, { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { io, type Socket } from "socket.io-client";
 import { Bot, CircleDollarSign, DoorOpen, Menu, NotebookText, Play, Rabbit, Send, UserRoundPlus, Volume2 } from "lucide-react";
 import type { AuthUser, ChatMessageDto, ClientToServerEvents, RunoutMode, ServerToClientEvents } from "@friends-poker/shared";
 import {
-  compareEvaluations,
-  evaluateFiveCards,
+  evaluateHand,
   type Card,
   type HandCategory,
-  type HandEvaluation,
   type PublicEnginePlayer,
   type PublicPokerGameState,
 } from "@friends-poker/poker-engine";
 import { getMe } from "../../../lib/api";
-import { formatCard, isRed } from "../../../lib/cards";
+import { getBestJokerRank, isJoker, isRed } from "../../../lib/cards";
 import { playSound, stopAllinSound } from "../../../lib/sound";
 import { EMOJI_CATEGORIES } from "../../../lib/emoji-data";
 
@@ -96,6 +94,7 @@ export default function TablePage() {
   const [editSmallBlind, setEditSmallBlind] = useState(0);
   const [editBigBlind, setEditBigBlind] = useState(0);
   const [editRabbitHunting, setEditRabbitHunting] = useState(true);
+  const [editDeckType, setEditDeckType] = useState("standard");
   const [editTimeout, setEditTimeout] = useState(30);
   const [showLedger, setShowLedger] = useState(false);
   const [showAIPanel, setShowAIPanel] = useState(false);
@@ -105,7 +104,13 @@ export default function TablePage() {
   const [emojiTab, setEmojiTab] = useState(0);
   const [throwEmoji, setThrowEmoji] = useState<string | null>(null);
   const [throwPickerOpen, setThrowPickerOpen] = useState(false);
-  const [emojiFlights, setEmojiFlights] = useState<Array<{ id: number; fromUserId: string; toUserId: string; emoji: string }>>([]);
+  const [showSoundPanel, setShowSoundPanel] = useState(false);
+  const [showKickPanel, setShowKickPanel] = useState(false);
+  const [simpleSound, setSimpleSound] = useState(() => {
+    if (typeof window !== "undefined") return localStorage.getItem("simpleSound") === "1";
+    return false;
+  });
+  const [emojiFlights, setEmojiFlights] = useState<Array<{ id: number; fromUserId: string; toUserId: string; emoji: string; fromX: number; fromY: number; toX: number; toY: number }>>([]);
   const flightIdRef = useRef(0);
   const [allinConfirm, setAllinConfirm] = useState(false);
   const [preFold, setPreFold] = useState(false);
@@ -113,27 +118,28 @@ export default function TablePage() {
   const [revealedSelf, setRevealedSelf] = useState(false);
   const [ledger, setLedger] = useState<{ userId: string; displayName: string; boughtIn: number; cashedOut: number; tableChips: number; net: number }[]>([]);
   const pendingMeRefreshRef = useRef(false);
-  const preFoldTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const preFoldTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const prevActionCountRef = useRef(0);
   const prevPhaseRef = useRef("");
-  const prevTurnUserIdRef = useRef<string | undefined>();
+  const prevTurnUserIdRef = useRef<string | undefined>(undefined);
   const timerWarnedRef = useRef(false);
   const prevMessageCountRef = useRef(0);
   const logScrollRef = useRef<HTMLDivElement>(null);
   const logPausedRef = useRef(false);
+  const chatLogRef = useRef<HTMLDivElement>(null);
+  const chatPausedRef = useRef(false);
   const flippingRef = useRef<Set<number>>(new Set());
   const [flipping, setFlipping] = useState<Set<number>>(new Set());
   const potRef = useRef<HTMLDivElement>(null);
   const seatRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const [coinAnims, setCoinAnims] = useState<Array<{ id: number; userId: string; delay: number; fromX: number; fromY: number; toX: number; toY: number }>>([]);
-  const logPauseTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const logPauseTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const chatPauseTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   useEffect(() => {
     let cleanedUp = false;
-    const activeSocket: TypedSocket = io({
-      withCredentials: true,
-      transports: ["polling"],
-    });
+    // withCredentials 在新版 socket.io-client 类型中已移除，但运行时仍支持
+    const activeSocket: TypedSocket = io({ withCredentials: true, transports: ["polling"] } as any);
     setSocket(activeSocket);
 
     // Register listeners synchronously before any async work
@@ -155,7 +161,22 @@ export default function TablePage() {
     );
     activeSocket.on("chat:message", (message) => setMessages((prev) => [...prev.slice(-80), message]));
     activeSocket.on("emoji:throw", (payload: any) => {
-      setEmojiFlights((prev) => [...prev, { id: flightIdRef.current++, fromUserId: payload.fromUserId, toUserId: payload.toUserId, emoji: payload.emoji }]);
+      const fromSeat = room?.seats.find((s: any) => s.userId === payload.fromUserId);
+      const toSeat = room?.seats.find((s: any) => s.userId === payload.toUserId);
+      const fromEl = fromSeat ? seatRefs.current.get(fromSeat.seatIndex) : null;
+      const toEl = toSeat ? seatRefs.current.get(toSeat.seatIndex) : null;
+      const fromRect = fromEl?.getBoundingClientRect();
+      const toRect = toEl?.getBoundingClientRect();
+      setEmojiFlights((prev) => [...prev, {
+        id: flightIdRef.current++,
+        fromUserId: payload.fromUserId,
+        toUserId: payload.toUserId,
+        emoji: payload.emoji,
+        fromX: fromRect ? fromRect.left + fromRect.width / 2 : 0,
+        fromY: fromRect ? fromRect.top + fromRect.height / 2 : 0,
+        toX: toRect ? toRect.left + toRect.width / 2 : 0,
+        toY: toRect ? toRect.top + toRect.height / 2 : 0,
+      }]);
     });
     activeSocket.on("game:rabbit-cards", (payload: any) => {
       setRabbitCards(payload.cards ?? []);
@@ -179,7 +200,7 @@ export default function TablePage() {
   }, [roomId]);
 
   useEffect(() => {
-    const timer = window.setInterval(() => setNowMs(Date.now()), 100);
+    const timer = window.setInterval(() => setNowMs(Date.now()), 200);
     return () => window.clearInterval(timer);
   }, []);
 
@@ -289,6 +310,13 @@ export default function TablePage() {
     return cards;
   }, [isShowdownHand, winners, room?.game?.showdownEvaluations]);
 
+  const handLabels = useHandLabels(room?.game?.players, room?.game?.communityCards ?? [], room?.game?.phase);
+  const communityJokerRanks = useJokerRanks((room?.game?.communityCards ?? []) as Card[], room?.game?.phase);
+
+  const seatRefCallbacks = useMemo(() =>
+    Array.from({ length: maxPlayers }, (_, i) => (el: HTMLDivElement | null) => { if (el) seatRefs.current.set(i, el); }),
+  [maxPlayers]);
+
   // Auto-scroll action log
   useEffect(() => {
     const el = logScrollRef.current;
@@ -311,6 +339,33 @@ export default function TablePage() {
     if (el) el.scrollTop = el.scrollHeight;
   });
 
+  // Auto-scroll chat on new messages
+  useEffect(() => {
+    const el = chatLogRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+      if (!atBottom) {
+        chatPausedRef.current = true;
+        clearTimeout(chatPauseTimerRef.current);
+        chatPauseTimerRef.current = setTimeout(() => { chatPausedRef.current = false; }, 10000);
+      }
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => { el.removeEventListener("scroll", onScroll); clearTimeout(chatPauseTimerRef.current); };
+  }, []);
+
+  useEffect(() => {
+    if (chatPausedRef.current) return;
+    const el = chatLogRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [messages]);
+
+  function playSoundFiltered(name: string) {
+    if (simpleSound && name !== "turn" && name !== "allin") return;
+    playSound(name);
+  }
+
   // Sound effects — triggered locally via room state changes, everyone hears action sounds
   const actionLog = room?.game?.actionLog ?? [];
   const actionCount = actionLog.length;
@@ -322,6 +377,7 @@ export default function TablePage() {
     if (handId && handId !== prevHandIdRef.current) {
       prevHandIdRef.current = handId;
       prevActionCountRef.current = 0;
+      flippingRef.current = new Set();
       stopAllinSound();
       setRabbitCards(null);
     }
@@ -338,12 +394,12 @@ export default function TablePage() {
     if (actionCount <= prevActionCountRef.current) return;
     for (let i = prevActionCountRef.current; i < actionCount; i++) {
       const a = actionLog[i]?.action;
-      if (a === "fold") playSound("fold");
-      else if (a === "check") playSound("check");
-      else if (a === "call") playSound("call");
-      else if (a === "bet") playSound("bet");
-      else if (a === "raise") playSound("raise");
-      else if (a === "all-in") playSound("allin");
+      if (a === "fold") playSoundFiltered("fold");
+      else if (a === "check") playSoundFiltered("check");
+      else if (a === "call") playSoundFiltered("call");
+      else if (a === "bet") playSoundFiltered("bet");
+      else if (a === "raise") playSoundFiltered("raise");
+      else if (a === "all-in") playSoundFiltered("allin");
     }
     prevActionCountRef.current = actionCount;
   }, [actionCount]);
@@ -354,10 +410,10 @@ export default function TablePage() {
       setCoinAnims([]);
     }
     if (phase && phase !== prevPhaseRef.current && ["flop", "turn", "river"].includes(phase)) {
-      playSound("deal");
+      playSoundFiltered("deal");
     }
     if (phase === "finished" && prevPhaseRef.current && prevPhaseRef.current !== "finished") {
-      if (winners.length > 0) playSound("win");
+      if (winners.length > 0) playSoundFiltered("win");
       setPreFold(false);
       setRevealedSelf(false);
       // Coin fly animation
@@ -387,6 +443,13 @@ export default function TablePage() {
     prevPhaseRef.current = phase ?? "";
   }, [room?.game?.phase, winners.length]);
 
+  // Auto rabbit hunt — 1s after hand finishes
+  useEffect(() => {
+    if (!isFinished || !room?.settings.rabbitHunting || (room?.game?.communityCards.length ?? 0) >= 5 || rabbitCards) return;
+    const timer = setTimeout(() => socket?.emit("game:rabbit", { roomId }), 1000);
+    return () => clearTimeout(timer);
+  }, [isFinished, room?.settings.rabbitHunting, room?.game?.communityCards, rabbitCards, roomId, socket]);
+
   // Card flip animation
   useEffect(() => {
     const cards = room?.game?.communityCards ?? [];
@@ -397,13 +460,11 @@ export default function TablePage() {
       if (cardChanged && hasNew) newCards.push(i);
     }
     if (newCards.length === 0) return;
-    const set = new Set([...flippingRef.current, ...newCards]);
-    flippingRef.current = set;
-    setFlipping(new Set(set));
-    // Remove flip state after animation
+    for (const i of newCards) flippingRef.current.add(i);
+    setFlipping(new Set(newCards));
+    // Remove flip visual after animation
     const maxDelay = newCards.length === 3 ? newCards.length * 120 + 300 : 300;
     const timer = setTimeout(() => {
-      flippingRef.current = new Set();
       setFlipping(new Set());
     }, maxDelay);
     return () => clearTimeout(timer);
@@ -413,7 +474,7 @@ export default function TablePage() {
   useEffect(() => {
     const turnUserId = room?.game?.currentTurnUserId;
     if (turnUserId && turnUserId === me?.id && turnUserId !== prevTurnUserIdRef.current) {
-      playSound("turn");
+      playSoundFiltered("turn");
       timerWarnedRef.current = false;
       // Pre-fold check: auto-fold after 1s delay
       clearTimeout(preFoldTimerRef.current);
@@ -434,7 +495,7 @@ export default function TablePage() {
   useEffect(() => {
     if (!actionEnabled || !remainingSeconds || remainingSeconds > 5) return;
     if (!timerWarnedRef.current) {
-      playSound("timer");
+      playSoundFiltered("timer");
       timerWarnedRef.current = true;
     }
   }, [actionEnabled, remainingSeconds]);
@@ -442,7 +503,7 @@ export default function TablePage() {
   // Chat sound — everyone hears new messages
   useEffect(() => {
     if (messages.length > prevMessageCountRef.current) {
-      playSound("chat");
+      playSoundFiltered("chat");
     }
     prevMessageCountRef.current = messages.length;
   }, [messages.length]);
@@ -497,7 +558,7 @@ export default function TablePage() {
 
   function adjustTableChips(type: "add" | "remove") {
     pendingMeRefreshRef.current = true;
-    playSound("chip");
+    playSoundFiltered("chip");
     emit(type === "add" ? "room:chips:add" : "room:chips:remove", { roomId, amount: chipAmount });
   }
 
@@ -518,6 +579,7 @@ export default function TablePage() {
     setEditSmallBlind(room.settings.smallBlind);
     setEditBigBlind(room.settings.bigBlind);
     setEditRabbitHunting(room.settings.rabbitHunting);
+    setEditDeckType((room.settings as any).deckType ?? "standard");
     setEditTimeout(room.settings.actionTimeoutSeconds);
     setShowSettings(true);
   }
@@ -535,6 +597,7 @@ export default function TablePage() {
           bigBlind: editBigBlind,
           actionTimeoutSeconds: editTimeout,
           rabbitHunting: editRabbitHunting,
+          deckType: editDeckType,
         }),
       });
       if (!res.ok) {
@@ -560,7 +623,12 @@ export default function TablePage() {
     <main className="page widePage tablePage">
       <div className="sectionTitle tableHeader">
         <div>
-          <h1>{room?.name ?? "牌桌"}</h1>
+          <h1>
+            {room?.name ?? "牌桌"}
+            {room?.game?.deckType && room.game.deckType !== "standard" && (
+              <span className="dlcBadge">👑 王室战争</span>
+            )}
+          </h1>
           <p className="muted">
             {room
               ? `盲注 ${room.settings.smallBlind}/${room.settings.bigBlind} · 前注 ${room.settings.ante} · ${phaseLabel(room.status)}`
@@ -619,7 +687,7 @@ export default function TablePage() {
             <button className="iconButton" title="房间设置" type="button" onClick={openSettings}>
               <Menu size={26} />
             </button>
-            <button className="iconButton" title="声音设置" type="button">
+            <button className="iconButton" title="声音设置" type="button" onClick={() => setShowSoundPanel(!showSoundPanel)}>
               <Volume2 size={24} />
             </button>
             <button className="iconButton" title="筹码记录" type="button" onClick={openLedger}>
@@ -627,6 +695,9 @@ export default function TablePage() {
             </button>
             <button className="iconButton" title="AI玩家" type="button" onClick={() => setShowAIPanel(!showAIPanel)}>
               <Bot size={22} />
+            </button>
+            <button className="iconButton" title="踢人" type="button" onClick={() => setShowKickPanel(!showKickPanel)}>
+              <DoorOpen size={22} />
             </button>
           </div>
 
@@ -641,6 +712,7 @@ export default function TablePage() {
               <span>{room ? `${room.settings.minPlayersToStart}+ 人开局 · ${room.settings.actionTimeoutSeconds} 秒行动` : ""}</span>
             </div>
             <div className="centerPot">
+              <div className="birthdayBanner"><span className="birthdayMarquee">🎂 康师傅生日快乐！ 🎂 康师傅生日快乐！ 🎂</span></div>
               <div className="centerTopRow">
                 <div className="potPill" ref={potRef}>
                   <CircleDollarSign size={18} /> {potTotal}
@@ -654,7 +726,7 @@ export default function TablePage() {
                       <span className="runoutLabel">第 {boardIndex + 1} 次</span>
                       <div className="community">
                         {[0, 1, 2, 3, 4].map((index) => (
-                          <PokerCard key={index} card={board.cards[index]} dimmed={isShowdownHand && winnerBestCards.size > 0 && board.cards[index] ? !winnerBestCards.has(`${board.cards[index]!.rank}${board.cards[index]!.suit}`) : undefined} />
+                          <PokerCard key={index} card={board.cards[index]} dimmed={isShowdownHand && winnerBestCards.size > 0 && board.cards[index] ? !winnerBestCards.has(`${board.cards[index]!.rank}${board.cards[index]!.suit}`) : undefined} rankLabel={(board.cards[index] as Card) ? communityJokerRanks.get(`${(board.cards[index] as Card).rank}${(board.cards[index] as Card).suit}`) : undefined} />
                         ))}
                       </div>
                     </div>
@@ -675,6 +747,7 @@ export default function TablePage() {
                         flipDelay={index * 120}
                         dimmed={isShowdownHand && winnerBestCards.size > 0 && c ? !winnerBestCards.has(`${c.rank}${c.suit}`) : undefined}
                         rabbit={isRabbit}
+                        rankLabel={c ? communityJokerRanks.get(`${c.rank}${c.suit}`) : undefined}
                       />
                     );})}
                   </div>
@@ -704,7 +777,7 @@ export default function TablePage() {
                 room?.game?.smallBlindSeatIndex === index ? "SB" : room?.game?.bigBlindSeatIndex === index ? "BB" : "";
               const handDelta = player ? winnerDeltas.get(player.userId) ?? 0 : 0;
               const equity = seat ? equityByUserId.get(seat.userId) : undefined;
-              const currentHand = describeCurrentHand(player, room?.game?.communityCards ?? []);
+              const currentHand = player ? handLabels.get(player.userId) : undefined;
               return (
                 <div
                   className={`seat ${seat ? "" : "seatEmpty"} ${
@@ -712,7 +785,7 @@ export default function TablePage() {
                   } ${seat?.userId === me?.id ? "seatSelf" : ""} ${
                     isFinished && seat && winnerIds.has(seat.userId) ? "seatWinner" : ""
                   } ${throwEmoji && seat && seat.userId !== me?.id ? "seatThrowTarget" : ""}`}
-                  ref={(el) => { if (el) seatRefs.current.set(index, el); }}
+                  ref={seatRefCallbacks[index]}
                   style={{ left: `${left}%`, top: `${top}%` }}
                   key={index}
                   onClick={(e) => {
@@ -720,7 +793,17 @@ export default function TablePage() {
                     e.stopPropagation();
                     socket?.emit("emoji:throw", { roomId, toUserId: seat.userId, emoji: throwEmoji });
                     // Render local flight animation too
-                    setEmojiFlights((prev) => [...prev, { id: flightIdRef.current++, fromUserId: me!.id, toUserId: seat.userId, emoji: throwEmoji }]);
+                    const mySeatEl = mySeat ? seatRefs.current.get(mySeat.seatIndex) : null;
+                    const targetEl = seatRefs.current.get(index);
+                    const fromRect = mySeatEl?.getBoundingClientRect();
+                    const toRect = targetEl?.getBoundingClientRect();
+                    setEmojiFlights((prev) => [...prev, {
+                      id: flightIdRef.current++, fromUserId: me!.id, toUserId: seat.userId, emoji: throwEmoji,
+                      fromX: fromRect ? fromRect.left + fromRect.width / 2 : 0,
+                      fromY: fromRect ? fromRect.top + fromRect.height / 2 : 0,
+                      toX: toRect ? toRect.left + toRect.width / 2 : 0,
+                      toY: toRect ? toRect.top + toRect.height / 2 : 0,
+                    }]);
                   }}
                 >
                   {seat ? (
@@ -733,7 +816,11 @@ export default function TablePage() {
                       <div className="muted">
                         {actionLabel(player?.lastAction ?? player?.status)} · 投入 {player?.totalCommitted ?? 0}
                       </div>
-                      {player && player.actedThisStreet && player.lastAction && !isFinished && <div className="streetBetBadge">{streetActionLabel(player.lastAction, player.committedThisStreet)}</div>}
+                      {player && !player.lastAction && player.committedThisStreet > 0 && !isFinished && (room?.game?.smallBlindSeatIndex === index || room?.game?.bigBlindSeatIndex === index) && (
+                        <div className="streetBetBadge">{room?.game?.smallBlindSeatIndex === index ? `小盲 ${player.committedThisStreet}` : `大盲 ${player.committedThisStreet}`}</div>
+                      )}
+                      {player && player.lastAction && player.committedThisStreet > 0 && !isFinished && <div className="streetBetBadge">{streetActionLabel(player.lastAction, player.committedThisStreet)}</div>}
+                      {player && player.lastAction === "check" && player.actedThisStreet && !isFinished && <div className="streetBetBadge">过牌</div>}
                       {player && isFinished && winnerIds.has(player.userId) && (
                         <div className="streetBetBadge winBadge">赢 +{winnerDeltas.get(player.userId)}</div>
                       )}
@@ -744,33 +831,29 @@ export default function TablePage() {
                           {equity.tiePercent > 0 ? ` · 平分 ${formatPercent(equity.tiePercent)}` : ""}
                         </div>
                       )}
-                      <div className={`seatCards ${player?.status === "folded" ? "seatCardsFolded" : ""}`}>
+                      <div className={`seatCards ${player?.status === "folded" && seat.userId !== me?.id ? "seatCardsFolded" : ""}`}>
                         {preStand && seat.userId === me?.id ? (
                           <span className="readyInBadge">Mamba out</span>
-                        ) : isFinished && player?.status === "folded" && seat.userId === me?.id ? (
-                          revealedSelf ? (
-                            player.holeCards?.map((card, cardIndex) => (
-                              <MiniCard key={cardIndex} card={card as Card} />
-                            ))
-                          ) : (
-                            <button className="showCardBtn" onClick={() => { setRevealedSelf(true); socket?.emit("player:reveal", { roomId }); }} title="点击展示手牌">
-                              <div className="miniCard cardBack">?</div>
-                              <div className="miniCard cardBack">?</div>
-                            </button>
-                          )
                         ) : player?.holeCards?.length ? (
-                          player.holeCards.map((card, cardIndex) => (
-                            <MiniCard key={cardIndex} card={card as Card} dimmed={isShowdownHand && winnerBestCards.size > 0 ? !winnerBestCards.has(`${(card as Card).rank}${(card as Card).suit}`) : undefined} />
-                          ))
+                          player.holeCards.map((card, cardIndex) => {
+                            const canReveal = isFinished && seat.userId === me?.id && !revealedSelf &&
+                              (player?.status === "folded" || (!isShowdownHand && winnerIds.has(seat.userId)));
+                            return (
+                              <MiniCard
+                                key={cardIndex}
+                                card={card as Card}
+                                dimmed={isShowdownHand && winnerBestCards.size > 0 ? !winnerBestCards.has(`${(card as Card).rank}${(card as Card).suit}`) : undefined}
+                                rankLabel={getBestJokerRank(card as Card, [...(player.holeCards ?? []), ...(room?.game?.communityCards ?? [])] as Card[])}
+                                onClick={canReveal ? () => { setRevealedSelf(true); socket?.emit("player:reveal", { roomId }); } : undefined}
+                              />
+                            );
+                          })
                         ) : player ? (
                           <><div className="miniCard cardBack">?</div><div className="miniCard cardBack">?</div></>
                         ) : seat.ready ? (
                           <span className="readyInBadge">Mamba in</span>
                         ) : null}
                         {player?.status === "folded" && <span className="foldOverlay">FOLD</span>}
-                        {isFinished && !isShowdownHand && seat.userId === me?.id && winnerIds.has(seat.userId) && !revealedSelf && (
-                          <button className="showToTableBtn" onClick={() => { setRevealedSelf(true); socket?.emit("player:reveal", { roomId }); }}>Show</button>
-                        )}
                       </div>
                       <div className="seatMarkers">
                         {room?.game?.buttonSeatIndex === index && <span className="dealerChip">D</span>}
@@ -886,33 +969,21 @@ export default function TablePage() {
         ))}
 
         {emojiFlights.map((flight) => {
-          const fromSeat = room?.seats.find((s) => s.userId === flight.fromUserId);
-          const toSeat = room?.seats.find((s) => s.userId === flight.toUserId);
-          const fromEl = fromSeat ? seatRefs.current.get(fromSeat.seatIndex) : null;
-          const toEl = toSeat ? seatRefs.current.get(toSeat.seatIndex) : null;
-          if (!fromEl || !toEl) return null;
-          const fromRect = fromEl.getBoundingClientRect();
-          const toRect = toEl.getBoundingClientRect();
-          const fromX = fromRect.left + fromRect.width / 2;
-          const fromY = fromRect.top + fromRect.height / 2;
-          const toX = toRect.left + toRect.width / 2;
-          const toY = toRect.top + toRect.height / 2;
-          return (
-            <span
-              key={flight.id}
-              className="emojiFly"
-              style={{
-                left: fromX,
-                top: fromY,
-                "--toX": `${toX}px`,
-                "--toY": `${toY}px`,
-                "--fromX": `${fromX}px`,
-                "--fromY": `${fromY}px`,
-              } as React.CSSProperties}
-            >
-              {flight.emoji}
-            </span>
-          );
+          if (!flight.fromX && !flight.fromY) return null;
+          return <span
+            key={flight.id}
+            className="emojiFly"
+            style={{
+              left: flight.fromX,
+              top: flight.fromY,
+              "--toX": `${flight.toX}px`,
+              "--toY": `${flight.toY}px`,
+              "--fromX": `${flight.fromX}px`,
+              "--fromY": `${flight.fromY}px`,
+            } as React.CSSProperties}
+          >
+            {flight.emoji}
+          </span>;
         })}
 
         <aside className="sidePanel tableDrawer">
@@ -969,7 +1040,7 @@ export default function TablePage() {
         </aside>
 
         <div className="chatFloat">
-          <div className="chatLog">
+          <div className="chatLog" ref={chatLogRef}>
             {messages.map((message) => (
               <div className="chatLine" key={message.id}>
                 <strong>{message.displayName}</strong>
@@ -1031,6 +1102,14 @@ export default function TablePage() {
                   {" "}Rabbit Hunting
                 </label>
                 <small className="muted">牌局提前结束时展示后续公共牌</small>
+              </div>
+              <div className="field">
+                <label>牌库模式</label>
+                <select className="select" value={editDeckType} onChange={(e) => setEditDeckType(e.target.value)}>
+                  <option value="standard">标准（52张）</option>
+                  <option value="royal-war">王室战争（54张+大小王）</option>
+                </select>
+                <small className="muted">下一局生效</small>
               </div>
               <div className="actions">
                 <button className="btn" onClick={() => setShowSettings(false)}>取消</button>
@@ -1128,6 +1207,48 @@ export default function TablePage() {
           </div>
         )}
 
+        {showSoundPanel && (
+          <div className="modalOverlay" onClick={() => setShowSoundPanel(false)}>
+            <div className="modal card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 320 }}>
+              <h2>声音设置</h2>
+              <label className="checkboxRow" style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 12, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={simpleSound}
+                  onChange={(e) => {
+                    setSimpleSound(e.target.checked);
+                    localStorage.setItem("simpleSound", e.target.checked ? "1" : "0");
+                  }}
+                />
+                简约模式（仅播放轮到你和 All-in 音效）
+              </label>
+              <div className="actions" style={{ marginTop: 16 }}>
+                <button className="btn" onClick={() => setShowSoundPanel(false)}>关闭</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {showKickPanel && (
+          <div className="modalOverlay" onClick={() => setShowKickPanel(false)}>
+            <div className="modal card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 280 }}>
+              <h2>踢出玩家</h2>
+              <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 6 }}>
+                {room?.seats.filter((s) => s.userId !== me?.id).length === 0 && <p className="muted">没有可踢出的玩家</p>}
+                {room?.seats.filter((s) => s.userId !== me?.id).map((s) => (
+                  <button key={s.userId} className="btn" style={{ justifyContent: "flex-start" }} onClick={() => { emit("room:kick", { roomId, targetUserId: s.userId }); setShowKickPanel(false); }}>
+                    <DoorOpen size={16} style={{ marginRight: 8 }} />
+                    {s.displayName}（{s.seatIndex + 1} 号位）
+                  </button>
+                ))}
+              </div>
+              <div className="actions" style={{ marginTop: 16 }}>
+                <button className="btn" onClick={() => setShowKickPanel(false)}>关闭</button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {emojiPickerSeat !== null && (
           <div className="modalOverlay" onClick={() => setEmojiPickerSeat(null)}>
             <div className="emojiPicker" onClick={(e) => e.stopPropagation()}>
@@ -1143,7 +1264,7 @@ export default function TablePage() {
                 ))}
               </div>
               <div className="emojiGrid">
-                {EMOJI_CATEGORIES[emojiTab].emojis.map((emoji) => (
+                {(EMOJI_CATEGORIES[emojiTab]?.emojis ?? []).map((emoji) => (
                   <button
                     key={emoji}
                     className="emojiCell"
@@ -1294,63 +1415,84 @@ function describeCurrentHand(player: PublicEnginePlayer | undefined, communityCa
     if (holeCards.length === 2 && holeCards[0]?.rank === holeCards[1]?.rank) {
       return "一对";
     }
+    if (holeCards.some(isJoker)) {
+      return "Joker";
+    }
     return `高牌 ${holeCards.map((card) => card.rank).join("/")}`;
   }
-  const evaluation = bestEvaluation(cards);
+  const evaluation = evaluateHand(cards);
   return evaluation ? handCategoryLabel[evaluation.category] : undefined;
 }
 
-function bestEvaluation(cards: Card[]): HandEvaluation | undefined {
-  if (cards.length < 5) {
-    return undefined;
-  }
-  return combinations(cards, 5)
-    .map((combo) => evaluateFiveCards(combo))
-    .sort(compareEvaluations)
-    .at(-1);
+function useJokerRanks(allCards: Card[], phase: string | undefined) {
+  return useMemo(() => {
+    const map = new Map<string, string>();
+    for (const c of allCards) {
+      map.set(`${c.rank}${c.suit}`, getBestJokerRank(c, allCards));
+    }
+    return map;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, allCards]);
 }
 
-function combinations<T>(items: T[], size: number): T[][] {
-  if (size === 0) {
-    return [[]];
-  }
-  if (items.length < size) {
-    return [];
-  }
-  const [head, ...tail] = items;
-  return [
-    ...combinations(tail, size - 1).map((combo) => [head!, ...combo]),
-    ...combinations(tail, size),
-  ];
+function useHandLabels(players: PublicEnginePlayer[] | undefined, communityCards: Card[], phase: string | undefined) {
+  return useMemo(() => {
+    const map = new Map<string, string | undefined>();
+    for (const p of players ?? []) {
+      map.set(p.userId, describeCurrentHand(p, communityCards));
+    }
+    return map;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, players, communityCards]);
 }
 
 function formatPercent(value: number): string {
   return `${Math.round(value * 10) / 10}%`;
 }
 
-function PokerCard({ card, flipping, flipDelay = 0, dimmed, rabbit }: { card?: Card; flipping?: boolean; flipDelay?: number; dimmed?: boolean; rabbit?: boolean }) {
+const PokerCard = React.memo(function PokerCard({ card, flipping, flipDelay = 0, dimmed, rabbit, rankLabel }: { card?: Card; flipping?: boolean; flipDelay?: number; dimmed?: boolean; rabbit?: boolean; rankLabel?: string }) {
   if (!card) return <div className="playingCard communityEmpty" />;
   const red = isRed(card);
+  const joker = isJoker(card);
   return (
     <div
-      className={`playingCard ${red ? "redCard" : ""} ${flipping ? "cardFlipping" : ""} ${dimmed === true ? "cardDimmed" : dimmed === false ? "cardHighlight" : ""} ${rabbit ? "rabbitCard" : ""}`}
+      className={`playingCard ${red ? "redCard" : ""} ${joker ? "jokerCard" : ""} ${flipping ? "cardFlipping" : ""} ${dimmed === true ? "cardDimmed" : dimmed === false ? "cardHighlight" : ""} ${rabbit ? "rabbitCard" : ""}`}
       style={flipping ? { animationDelay: `${flipDelay}ms` } : undefined}
     >
-      <span className="boardRank">{card.rank}</span>
-      <span className="boardSuit">{suitSymbol[card.suit] ?? card.suit}</span>
+      {joker ? (
+        <>
+          {rankLabel ? <span className="boardRank jokerRankBlink">{rankLabel}</span> : null}
+          <span className="boardSuit jokerEmoji">👑</span>
+        </>
+      ) : (
+        <>
+          <span className="boardRank">{card.rank}</span>
+          <span className="boardSuit">{suitSymbol[card.suit] ?? card.suit}</span>
+        </>
+      )}
     </div>
   );
-}
+});
 
-const suitSymbol: Record<string, string> = { s: "♠", h: "♥", d: "♦", c: "♣" };
+const suitSymbol: Record<string, string> = { s: "♠", h: "♥", d: "♦", c: "♣", x: "" };
 
-function MiniCard({ card, dimmed }: { card?: Card; dimmed?: boolean }) {
+const MiniCard = React.memo(function MiniCard({ card, dimmed, rankLabel, onClick }: { card?: Card; dimmed?: boolean; rankLabel?: string; onClick?: () => void }) {
   if (!card) return <div className="miniCard cardBack">?</div>;
   const red = isRed(card);
+  const joker = isJoker(card);
   return (
-    <div className={`miniCard ${red ? "redCard" : ""} ${dimmed === true ? "cardDimmed" : dimmed === false ? "cardHighlight" : ""}`}>
-      <span className="miniRank">{card.rank}</span>
-      <span className="miniSuit">{suitSymbol[card.suit] ?? card.suit}</span>
+    <div className={`miniCard ${red ? "redCard" : ""} ${joker ? "jokerCard" : ""} ${dimmed === true ? "cardDimmed" : dimmed === false ? "cardHighlight" : ""} ${onClick ? "cardRevealable" : ""}`} onClick={onClick} title={onClick ? "点击向全桌展示手牌" : undefined}>
+      {joker ? (
+        <>
+          {rankLabel ? <span className="miniRank jokerRankBlink">{rankLabel}</span> : null}
+          <span className="miniSuit jokerEmoji">👑</span>
+        </>
+      ) : (
+        <>
+          <span className="miniRank">{card.rank}</span>
+          <span className="miniSuit">{suitSymbol[card.suit] ?? card.suit}</span>
+        </>
+      )}
     </div>
   );
-}
+});

@@ -1,6 +1,12 @@
 import { RANK_VALUE, cardToString } from "./cards";
 import type { Card, HandCategory, HandEvaluation } from "./types";
 
+let _jokerEval: ((cards: Card[]) => HandEvaluation) | null = null;
+
+export function _registerJokerEvaluator(fn: ((cards: Card[]) => HandEvaluation) | null): void {
+  _jokerEval = fn;
+}
+
 const CATEGORY_RANK: Record<HandCategory, number> = {
   "High Card": 0,
   "One Pair": 1,
@@ -14,13 +20,43 @@ const CATEGORY_RANK: Record<HandCategory, number> = {
   "Royal Flush": 9,
 };
 
-export function evaluateSevenCards(cards: Card[]): HandEvaluation {
+export function evaluateSevenCardsPure(cards: Card[]): HandEvaluation {
   if (cards.length !== 7) {
     throw new Error("德州扑克摊牌评估需要正好 7 张牌");
   }
-
   const combos = combinations(cards, 5).map(evaluateFiveCards);
   return combos.sort(compareEvaluations).at(-1)!;
+}
+
+export function evaluateSevenCards(cards: Card[]): HandEvaluation {
+  const hasJoker = cards.some((c) => c.rank === "R" || c.rank === "B");
+  if (hasJoker && _jokerEval) {
+    return _jokerEval(cards);
+  }
+  return evaluateSevenCardsPure(cards);
+}
+
+export function evaluateHand(cards: Card[]): HandEvaluation | undefined {
+  if (cards.length < 5) return undefined;
+
+  const hasJoker = cards.some((c) => c.rank === "R" || c.rank === "B");
+  if (hasJoker && _jokerEval) {
+    try {
+      const mod = _jokerEval(cards);
+      return mod;
+    } catch {
+      // fall through to standard
+    }
+  }
+
+  if (!hasJoker) {
+    const combos = combinations(cards, 5).map(evaluateFiveCards);
+    return combos.sort(compareEvaluations).at(-1);
+  }
+
+  // hasJoker but DLC not loaded — fall back to bare evaluation (won't handle jokers)
+  const combos = combinations(cards, 5).map(evaluateFiveCards);
+  return combos.sort(compareEvaluations).at(-1);
 }
 
 export function compareEvaluations(a: HandEvaluation, b: HandEvaluation): number {
@@ -126,7 +162,7 @@ function getStraightHigh(values: number[]): number | undefined {
   return undefined;
 }
 
-function combinations<T>(items: T[], size: number): T[][] {
+export function combinations<T>(items: T[], size: number): T[][] {
   if (size === 0) {
     return [[]];
   }

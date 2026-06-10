@@ -1,4 +1,4 @@
-export type Suit = "s" | "h" | "d" | "c";
+export type Suit = "s" | "h" | "d" | "c" | "x";
 export type Rank =
   | "2"
   | "3"
@@ -12,7 +12,11 @@ export type Rank =
   | "J"
   | "Q"
   | "K"
-  | "A";
+  | "A"
+  | "R"
+  | "B";
+
+export type DeckType = "standard" | "royal-war";
 
 export interface Card {
   rank: Rank;
@@ -139,6 +143,7 @@ export interface PokerGameState {
   smallBlind: number;
   bigBlind: number;
   ante: number;
+  deckType: DeckType;
   buttonSeatIndex: number;
   smallBlindSeatIndex: number;
   bigBlindSeatIndex: number;
@@ -181,6 +186,7 @@ export interface PublicPokerGameState {
   smallBlind: number;
   bigBlind: number;
   ante: number;
+  deckType: DeckType;
   buttonSeatIndex: number;
   smallBlindSeatIndex: number;
   bigBlindSeatIndex: number;

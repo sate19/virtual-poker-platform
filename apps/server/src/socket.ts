@@ -115,6 +115,17 @@ export function registerSocket(app: FastifyInstance): Server<ClientToServerEvent
       });
     });
 
+    socket.on("room:kick", async (payload) => {
+      await guarded(socket, async () => {
+        const { roomId, targetUserId } = z.object({ roomId: z.string(), targetUserId: z.string() }).parse(payload);
+        const room = getRuntimeRoom(roomId);
+        if (user.role !== "ADMIN" && room.createdById !== user.id) return;
+        await standUp(roomId, { id: targetUserId, username: "", displayName: "", role: "USER", virtualChips: 0, isBanned: false }, true);
+        await emitRoomState(io, roomId);
+        await emitAllRoomLists(io);
+      });
+    });
+
     socket.on("room:ready", async (payload) => {
       await guarded(socket, async () => {
         const { roomId, ready } = readySchema.parse(payload);

@@ -7,6 +7,8 @@ import {
   getPublicGameStateForUser,
   rabbitHunt,
   startHand,
+  type Card,
+  type DeckType,
   type PokerGameState,
   type RunoutMode,
 } from "@friends-poker/poker-engine";
@@ -56,9 +58,11 @@ const actionTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const offlineCloseTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const runoutTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const handPauseTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const aiOnlyTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const aiUserIds = new Set<string>();
 const RUNOUT_REVEAL_DELAY_MS = 1500;
 const HAND_RESULT_HOLD_MS = 7000;
+const AI_ONLY_STAND_UP_SECONDS = 180;
 let realtimeServer: Server | undefined;
 
 interface CloseRoomOptions {
@@ -80,6 +84,7 @@ export function rememberSocket(socket: Socket, user: AuthUser): void {
     if (seat) {
       seat.connected = true;
       clearOfflineCloseTimer(room.id);
+      clearAIOnlyTimer(room.id);
     }
   }
 }
@@ -98,6 +103,7 @@ export function forgetSocket(socket: Socket): void {
     if (seat) {
       seat.connected = false;
       scheduleOfflineCloseIfNeeded(room.id);
+      scheduleAIOnlyStandUp(room.id);
     }
   }
 }
@@ -135,6 +141,7 @@ export async function hydrateRoomsFromDatabase(): Promise<void> {
         creatorOnlyStart: persisted.creatorOnlyStart,
         allowSpectators: persisted.allowSpectators,
         rabbitHunting: (persisted as any).rabbitHunting ?? true,
+        deckType: (persisted as any).deckType ?? "standard",
       },
       seats: persisted.seats.map((seat: PersistedSeat) => ({
         userId: seat.userId,
@@ -191,6 +198,8 @@ export function listRooms(): RoomSummaryDto[] {
       ante: room.settings.ante,
       actionTimeoutSeconds: room.settings.actionTimeoutSeconds,
       creatorOnlyStart: room.settings.creatorOnlyStart,
+      deckType: (room.settings.deckType ?? "standard") as DeckType,
+      createdById: room.createdById,
       createdAt: room.createdAt,
     }));
 }
@@ -235,6 +244,7 @@ export async function createRuntimeRoom(user: AuthUser, input: RoomSettingsDto):
       creatorOnlyStart: input.creatorOnlyStart,
       allowSpectators: input.allowSpectators,
       rabbitHunting: input.rabbitHunting,
+      deckType: input.deckType ?? "standard",
       createdById: user.id,
     },
   });
@@ -258,19 +268,17 @@ export async function createRuntimeRoom(user: AuthUser, input: RoomSettingsDto):
 export async function updateRoomSettings(
   roomId: string,
   user: AuthUser,
-  input: { smallBlind?: number; bigBlind?: number; actionTimeoutSeconds?: number; rabbitHunting?: boolean },
+  input: { smallBlind?: number; bigBlind?: number; actionTimeoutSeconds?: number; rabbitHunting?: boolean; deckType?: string },
 ): Promise<void> {
   const room = getRuntimeRoom(roomId);
   if (room.createdById !== user.id) {
     throw new Error("只有房主可以修改房间设置");
   }
-  if (room.game && room.game.phase !== "finished") {
-    throw new Error("牌局进行中不能修改设置");
-  }
-  if (input.smallBlind !== undefined) room.settings.smallBlind = input.smallBlind;
+  // 所有设置均可随时修改，牌局进行中则下一局生效  if (input.smallBlind !== undefined) room.settings.smallBlind = input.smallBlind;
   if (input.bigBlind !== undefined) room.settings.bigBlind = input.bigBlind;
   if (input.actionTimeoutSeconds !== undefined) room.settings.actionTimeoutSeconds = input.actionTimeoutSeconds;
   if (input.rabbitHunting !== undefined) room.settings.rabbitHunting = input.rabbitHunting;
+  if (input.deckType !== undefined) room.settings.deckType = input.deckType;
   if (room.settings.bigBlind < room.settings.smallBlind * 2) {
     throw new Error("大盲至少应为小盲的 2 倍");
   }
@@ -281,6 +289,7 @@ export async function updateRoomSettings(
       ...(input.bigBlind !== undefined ? { bigBlind: input.bigBlind } : {}),
       ...(input.actionTimeoutSeconds !== undefined ? { actionTimeoutSeconds: input.actionTimeoutSeconds } : {}),
       ...(input.rabbitHunting !== undefined ? { rabbitHunting: input.rabbitHunting } : {}),
+      ...(input.deckType !== undefined ? { deckType: input.deckType } : {}),
     },
   });
   if (realtimeServer) {
@@ -534,6 +543,7 @@ export function leaveRoom(roomId: string, user: AuthUser): void {
   if (seat) {
     seat.connected = false;
     scheduleOfflineCloseIfNeeded(room.id);
+    scheduleAIOnlyStandUp(room.id);
   }
 }
 
@@ -971,6 +981,63 @@ function scheduleOfflineCloseIfNeeded(roomId: string): void {
   offlineCloseTimers.set(roomId, timer);
 }
 
+function clearAIOnlyTimer(roomId: string): void {
+  const existing = aiOnlyTimers.get(roomId);
+  if (existing) {
+    clearTimeout(existing);
+    aiOnlyTimers.delete(roomId);
+  }
+}
+
+function scheduleAIOnlyStandUp(roomId: string): void {
+  clearAIOnlyTimer(roomId);
+  const room = rooms.get(roomId);
+  if (!room || room.status === "CLOSED") return;
+
+  const seats = room.seats;
+  if (seats.length === 0) return;
+
+  // Check if any human player is connected
+  const hasHumanConnected = seats.some((s) => !aiUserIds.has(s.userId) && s.connected);
+  if (hasHumanConnected) return;
+
+  // Check there's at least one AI connected
+  const hasAIConnected = seats.some((s) => aiUserIds.has(s.userId) && s.connected);
+  if (!hasAIConnected) return;
+
+  const timer = setTimeout(() => {
+    void standUpAIOnlyPlayers(roomId);
+  }, AI_ONLY_STAND_UP_SECONDS * 1000);
+  aiOnlyTimers.set(roomId, timer);
+}
+
+async function standUpAIOnlyPlayers(roomId: string): Promise<void> {
+  const room = rooms.get(roomId);
+  if (!room || room.status === "CLOSED") return;
+
+  // Re-check: still no human connected?
+  const hasHumanConnected = room.seats.some((s) => !aiUserIds.has(s.userId) && s.connected);
+  if (hasHumanConnected) return;
+
+  const aiSeats = room.seats.filter((s) => aiUserIds.has(s.userId));
+  for (const seat of aiSeats) {
+    try {
+      await standUp(roomId, { id: seat.userId, username: "", displayName: seat.displayName, role: "USER", virtualChips: 0, isBanned: false }, true);
+    } catch {
+      // Ignore errors for individual stand-up
+    }
+  }
+
+  if (realtimeServer) {
+    realtimeServer.to(room.id).emit("notification", {
+      level: "warning",
+      message: "所有真人玩家已离线超过 3 分钟，AI 玩家已自动离座。",
+    });
+    await emitRoomState(realtimeServer, room.id);
+    await emitAllRoomLists(realtimeServer);
+  }
+}
+
 async function autoCloseRoomIfAllPlayersOffline(roomId: string): Promise<void> {
   const room = rooms.get(roomId);
   if (!room || room.status === "CLOSED" || room.seats.length === 0 || room.seats.some((seat) => seat.connected)) {
@@ -1153,6 +1220,7 @@ async function beginRuntimeHand(room: RuntimeRoom, seats: RuntimeSeat[]): Promis
     ante: room.settings.ante,
     previousButtonSeatIndex: room.game?.buttonSeatIndex,
     handNumber: room.handCounter,
+    deckType: (room.settings.deckType ?? "standard") as DeckType,
   });
   reconcileActionClock(room.game, room.settings.actionTimeoutSeconds, new Date(), true);
   room.status = "PLAYING";
@@ -1209,63 +1277,73 @@ async function persistRoomSnapshot(room: RuntimeRoom): Promise<void> {
 }
 
 async function persistFinishedHand(room: RuntimeRoom): Promise<void> {
-  if (!room.game) {
-    return;
-  }
-  const existingHand = await prisma.hand.findUnique({ where: { id: room.game.handId } });
-  if (existingHand) {
-    return;
-  }
+  if (!room.game) return;
+
+  const existing = await prisma.userHandHistory.findFirst({ where: { handId: room.game.handId } });
+  if (existing) return;
+
   const potTotal = room.game.sidePots.reduce((sum, pot) => sum + pot.amount, 0);
-  const hand = await prisma.hand.create({
-    data: {
-      id: room.game.handId,
-      roomId: room.id,
-      handNumber: room.game.handNumber,
-      buttonSeatIndex: room.game.buttonSeatIndex,
-      smallBlind: room.settings.smallBlind,
-      bigBlind: room.settings.bigBlind,
-      ante: room.settings.ante,
-      board: room.game.communityCards as any,
-      potTotal,
-      result: {
-        awards: room.game.awards,
-        evaluations: room.game.showdownEvaluations,
-        runoutMode: room.game.runoutMode,
-        runoutBoards: room.game.runoutBoards,
-      } as any,
-      stateSnapshot: room.game as any,
-      endedAt: new Date(),
-      players: {
-        create: room.game.players.map((player) => ({
-          userId: player.userId,
-          seatIndex: player.seatIndex,
-          startingStack: player.startingStack,
-          endingStack: player.stack,
-          totalCommitted: player.totalCommitted,
-          holeCards: player.holeCards as any,
-          folded: player.status === "folded",
-          wonAmount: Math.max(0, player.stack - player.startingStack + player.totalCommitted),
-        })),
-      },
-      actions: {
-        create: room.game.actionLog.map((entry) => ({
-          roomId: room.id,
-          userId: entry.userId,
-          phase: mapPhase(entry.phase),
-          action: entry.action,
-          amount: entry.amount,
-          metadata: entry as any,
-        })),
-      },
-    },
-  });
+  const playerActions = room.game.actionLog.filter(
+    (e) => e.userId && ["fold", "check", "call", "bet", "raise", "all-in"].includes(e.action),
+  );
+
+  const opponentMap = new Map(
+    room.game.players.map((p) => [
+      p.userId,
+      { userId: p.userId, displayName: p.displayName, seatIndex: p.seatIndex },
+    ]),
+  );
 
   for (const player of room.game.players) {
-    const won = room.game.awards.some((award) => award.winnerIds.includes(player.userId));
+    const won = room.game.awards.some((a) => a.winnerIds.includes(player.userId));
     const showdown = Object.prototype.hasOwnProperty.call(room.game.showdownEvaluations, player.userId);
-    const existingStats = await prisma.userStats.findUnique({ where: { userId: player.userId } });
+    const wonAmount = Math.max(0, player.stack - player.startingStack + player.totalCommitted);
     const net = player.stack - player.startingStack;
+    const bestHand = showdown ? room.game.showdownEvaluations[player.userId]?.label ?? null : null;
+
+    const opponents = room.game.players
+      .filter((p) => p.userId !== player.userId)
+      .map((p) => ({
+        userId: p.userId,
+        displayName: p.displayName,
+        seatIndex: p.seatIndex,
+        holeCards: showdown ? (p.holeCards as any) : undefined,
+        wonAmount: Math.max(0, p.stack - p.startingStack + p.totalCommitted),
+      }));
+
+    await prisma.userHandHistory.create({
+      data: {
+        handId: room.game.handId,
+        roomId: room.id,
+        roomName: room.name,
+        userId: player.userId,
+        handNumber: room.game.handNumber,
+        playerCount: room.game.players.length,
+        buttonSeatIndex: room.game.buttonSeatIndex,
+        deckType: room.game.deckType,
+        smallBlind: room.settings.smallBlind,
+        bigBlind: room.settings.bigBlind,
+        ante: room.settings.ante,
+        seatIndex: player.seatIndex,
+        holeCards: player.holeCards as any,
+        communityCards: room.game.communityCards as any,
+        startingStack: player.startingStack,
+        endingStack: player.stack,
+        netResult: net,
+        totalCommitted: player.totalCommitted,
+        folded: player.status === "folded",
+        wonAmount,
+        bestHand: bestHand as any,
+        potTotal,
+        result: won ? (room.game!.awards.length > 1 || room.game!.awards[0]!.winnerIds.length > 1 ? "split" : "win") : player.status === "folded" ? "fold" : "lose",
+        actions: playerActions as any,
+        opponents: opponents as any,
+        startedAt: room.game.actionLog[0]?.createdAt ? new Date(room.game.actionLog[0].createdAt) : new Date(),
+        endedAt: new Date(),
+      },
+    });
+
+    const existingStats = await prisma.userStats.findUnique({ where: { userId: player.userId } });
     const biggestPotWon = won ? Math.max(existingStats?.biggestPotWon ?? 0, potTotal) : existingStats?.biggestPotWon ?? 0;
     await prisma.userStats.upsert({
       where: { userId: player.userId },
@@ -1290,16 +1368,6 @@ async function persistFinishedHand(room: RuntimeRoom): Promise<void> {
       },
     });
   }
-
-  await prisma.gameAction.create({
-    data: {
-      roomId: room.id,
-      handId: hand.id,
-      action: "HAND_FINISHED",
-      amount: potTotal,
-      metadata: { awards: room.game.awards } as any,
-    },
-  });
 }
 
 async function settleFinishedRoomIfNeeded(room: RuntimeRoom): Promise<boolean> {
@@ -1362,16 +1430,3 @@ function forcedCommitmentForSeat(room: RuntimeRoom, seatIndex: number): number {
   return forced;
 }
 
-function mapPhase(phase: string): "PREFLOP" | "FLOP" | "TURN" | "RIVER" | "SHOWDOWN" | "FINISHED" | undefined {
-  const map: Record<string, "PREFLOP" | "FLOP" | "TURN" | "RIVER" | "SHOWDOWN" | "FINISHED"> = {
-    preflop: "PREFLOP",
-    flop: "FLOP",
-    turn: "TURN",
-    river: "RIVER",
-    showdown: "SHOWDOWN",
-    runout: "SHOWDOWN",
-    revealing: "SHOWDOWN",
-    finished: "FINISHED",
-  };
-  return map[phase];
-}

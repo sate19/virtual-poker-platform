@@ -24,6 +24,7 @@ export const createRoomSchema = z.object({
   creatorOnlyStart: z.boolean().default(false),
   allowSpectators: z.boolean().default(true),
   rabbitHunting: z.boolean().default(true),
+  deckType: z.string().default("standard"),
 }).refine((room) => room.minPlayersToStart <= room.maxPlayers, {
   message: "开局人数不能大于最大人数",
   path: ["minPlayersToStart"],
@@ -35,6 +36,7 @@ export const updateRoomSettingsSchema = z.object({
   bigBlind: z.number().int().min(2).optional(),
   actionTimeoutSeconds: z.number().int().min(5).max(300).optional(),
   rabbitHunting: z.boolean().optional(),
+  deckType: z.string().optional(),
 });
 
 export const sitSchema = z.object({

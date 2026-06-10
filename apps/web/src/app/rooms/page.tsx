@@ -62,7 +62,10 @@ export default function RoomsPage() {
         {rooms.map((room) => (
           <div className="card roomCardWrapper" key={room.id}>
             <Link className="roomCardLink" href={`/table/${room.id}`}>
-              <h2>{room.name}</h2>
+              <h2>
+                {room.name}
+                {room.deckType && room.deckType !== "standard" && <span className="dlcBadge">👑 王室战争</span>}
+              </h2>
               <div className="statRow">
                 <span className="muted">状态</span>
                 <strong>{room.status}</strong>
@@ -91,7 +94,7 @@ export default function RoomsPage() {
                 <strong>{room.spectatorCount}</strong>
               </div>
             </Link>
-            {me?.role === "ADMIN" && (
+            {(me?.role === "ADMIN" || me?.id === room.createdById) && (
               <button
                 className="roomDeleteBtn"
                 title="删除房间"

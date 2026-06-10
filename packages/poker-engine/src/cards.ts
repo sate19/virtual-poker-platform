@@ -1,7 +1,13 @@
-import type { Card, Rank, Suit } from "./types";
+import type { Card, DeckType, Rank, Suit } from "./types";
 
-export const RANKS: Rank[] = ["2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K", "A"];
-export const SUITS: Suit[] = ["s", "h", "d", "c"];
+export const RANKS: Rank[] = ["2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K", "A", "R", "B"];
+export const SUITS: Suit[] = ["s", "h", "d", "c", "x"];
+export const STANDARD_RANKS = RANKS.slice(0, 13);
+export const STANDARD_SUITS = SUITS.slice(0, 4);
+
+// Joker rank ranges (dlc 兼容)
+export const BIG_JOKER_RANKS: Rank[] = ["9", "T", "J", "Q", "K", "A"];
+export const SMALL_JOKER_RANKS: Rank[] = ["2", "3", "4", "5", "6", "7", "8"];
 
 export const RANK_VALUE: Record<Rank, number> = {
   "2": 2,
@@ -17,10 +23,20 @@ export const RANK_VALUE: Record<Rank, number> = {
   Q: 12,
   K: 13,
   A: 14,
+  R: 15,
+  B: 1,
 };
 
-export function createDeck(): Card[] {
-  return SUITS.flatMap((suit) => RANKS.map((rank) => ({ rank, suit })));
+export function createDeck(deckType: DeckType = "standard"): Card[] {
+  if (deckType === "royal-war") {
+    try {
+      const mod = require("./dlc/royal-war") as { createRoyalWarDeck(): Card[] };
+      return mod.createRoyalWarDeck();
+    } catch {
+      // DLC folder removed, fall back to standard
+    }
+  }
+  return STANDARD_SUITS.flatMap((suit) => STANDARD_RANKS.map((rank) => ({ rank, suit })));
 }
 
 export function shuffleDeck(deck: Card[], random: () => number = Math.random): Card[] {

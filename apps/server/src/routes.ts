@@ -95,7 +95,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   app.patch("/rooms/:roomId/settings", { preHandler: requireUser }, async (request) => {
     const user = requestUser(request);
     const { roomId } = z.object({ roomId: z.string() }).parse(request.params);
-    const input = updateRoomSettingsSchema.parse({ ...request.body, roomId });
+    const input = updateRoomSettingsSchema.parse({ ...(request.body as object), roomId });
     await updateRoomSettings(roomId, user, input);
     return { ok: true };
   });
@@ -137,10 +137,9 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       update: {},
       create: { userId: user.id },
     });
-    const recentHands = await prisma.handPlayer.findMany({
+    const recentHands = await prisma.userHandHistory.findMany({
       where: { userId: user.id },
-      include: { hand: { include: { room: true } } },
-      orderBy: { hand: { endedAt: "desc" } },
+      orderBy: { endedAt: "desc" },
       take: 20,
     });
     return { stats, recentHands };
@@ -165,35 +164,24 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
   app.get("/admin/rooms", { preHandler: requireAdmin }, async () => getAdminRoomRows());
 
-  app.get("/admin/hands", { preHandler: requireAdmin }, async () =>
-    prisma.hand.findMany({
-      where: { room: { deletedAt: null } },
+  app.get("/admin/hands", { preHandler: requireAdmin }, async () => {
+    const roomIds = await getVisibleRoomIds();
+    return prisma.userHandHistory.findMany({
+      where: { roomId: { in: roomIds } },
       orderBy: { startedAt: "desc" },
-      take: 100,
-      include: {
-        room: true,
-        players: {
-          include: {
-            user: {
-              select: {
-                id: true,
-                username: true,
-                displayName: true,
-              },
-            },
-          },
-        },
-      },
-    }),
-  );
+      take: 200,
+    });
+  });
 
   app.get("/admin/actions", { preHandler: requireAdmin }, async () => {
     const roomIds = await getVisibleRoomIds();
-    return prisma.gameAction.findMany({
+    const histories = await prisma.userHandHistory.findMany({
       where: { roomId: { in: roomIds } },
+      select: { actions: true },
       orderBy: { createdAt: "desc" },
       take: 200,
     });
+    return histories.flatMap((h) => (h.actions as any[]) ?? []);
   });
 
   app.get("/admin/chats", { preHandler: requireAdmin }, async () =>
@@ -232,41 +220,41 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
   app.get("/admin/analytics", { preHandler: requireAdmin }, async () => {
     const roomIds = await getVisibleRoomIds();
-    const [hands, actions, users] = await Promise.all([
-      prisma.hand.findMany({
+    const [histories, users] = await Promise.all([
+      prisma.userHandHistory.findMany({
         where: { roomId: { in: roomIds } },
         orderBy: { endedAt: "desc" },
-        take: 500,
-        include: {
-          room: { select: { id: true, name: true } },
-          players: {
-            include: {
-              user: { select: { id: true, username: true, displayName: true } },
-            },
-          },
-        },
+        take: 2000,
       }),
-      prisma.gameAction.findMany({ where: { roomId: { in: roomIds } }, orderBy: { createdAt: "desc" }, take: 2000 }),
       prisma.user.findMany({
         include: { stats: true },
         orderBy: { createdAt: "desc" },
       }),
     ]);
 
+    const handMap = new Map<string, typeof histories[number]>();
+    for (const h of histories) {
+      if (!handMap.has(h.handId)) handMap.set(h.handId, h);
+    }
+    const hands = [...handMap.values()];
+
     const totalHands = hands.length;
-    const totalPot = hands.reduce((sum, hand) => sum + hand.potTotal, 0);
-    const largestHand = hands.reduce<(typeof hands)[number] | undefined>(
-      (largest, hand) => (!largest || hand.potTotal > largest.potTotal ? hand : largest),
+    const totalPot = hands.reduce((sum, h) => sum + h.potTotal, 0);
+    const largestHand = hands.reduce<typeof hands[number] | undefined>(
+      (largest, h) => (!largest || h.potTotal > largest.potTotal ? h : largest),
       undefined,
     );
-    const showdownHands = hands.filter((hand) => {
-      const result = hand.result as { evaluations?: Record<string, unknown> } | null;
-      return Boolean(result?.evaluations && Object.keys(result.evaluations).length > 1);
-    }).length;
-    const timeoutActions = actions.filter((action) => action.action.startsWith("timeout-auto")).length;
+    const showdownHands = hands.filter((h) => h.bestHand !== null).length;
+
+    const allActions: Array<{ action: string }> = [];
+    for (const h of histories) {
+      const acts = (h.actions as any[]) ?? [];
+      for (const a of acts) allActions.push(a);
+    }
+    const timeoutActions = allActions.filter((a) => a.action?.startsWith("timeout-auto")).length;
     const actionBreakdown = Object.entries(
-      actions.reduce<Record<string, number>>((counts, action) => {
-        counts[action.action] = (counts[action.action] ?? 0) + 1;
+      allActions.reduce<Record<string, number>>((counts, a) => {
+        counts[a.action] = (counts[a.action] ?? 0) + 1;
         return counts;
       }, {}),
     )
@@ -275,59 +263,44 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
     const playerAgg = new Map<
       string,
-      {
-        userId: string;
-        username: string;
-        displayName: string;
-        hands: number;
-        folded: number;
-        totalCommitted: number;
-        netVirtualChips: number;
-      }
+      { userId: string; username: string; displayName: string; hands: number; folded: number; totalCommitted: number; netVirtualChips: number }
     >();
-
     const roomAgg = new Map<
       string,
-      {
-        roomId: string;
-        roomName: string;
-        hands: number;
-        totalPot: number;
-        largestPot: number;
-        totalPlayers: number;
-      }
+      { roomId: string; roomName: string; hands: number; totalPot: number; largestPot: number; totalPlayers: number }
     >();
 
-    for (const hand of hands) {
-      const roomRow = roomAgg.get(hand.roomId) ?? {
-        roomId: hand.roomId,
-        roomName: hand.room?.name ?? "已删除房间",
+    for (const h of hands) {
+      const histForHand = histories.filter((r) => r.handId === h.handId);
+      const roomRow = roomAgg.get(h.roomId) ?? {
+        roomId: h.roomId,
+        roomName: h.roomName,
         hands: 0,
         totalPot: 0,
         largestPot: 0,
         totalPlayers: 0,
       };
       roomRow.hands += 1;
-      roomRow.totalPot += hand.potTotal;
-      roomRow.largestPot = Math.max(roomRow.largestPot, hand.potTotal);
-      roomRow.totalPlayers += hand.players.length;
-      roomAgg.set(hand.roomId, roomRow);
+      roomRow.totalPot += h.potTotal;
+      roomRow.largestPot = Math.max(roomRow.largestPot, h.potTotal);
+      roomRow.totalPlayers += histForHand.length;
+      roomAgg.set(h.roomId, roomRow);
 
-      for (const player of hand.players) {
-        const row = playerAgg.get(player.userId) ?? {
-          userId: player.userId,
-          username: player.user.username,
-          displayName: player.user.displayName,
+      for (const record of histForHand) {
+        const row = playerAgg.get(record.userId) ?? {
+          userId: record.userId,
+          username: "",
+          displayName: "",
           hands: 0,
           folded: 0,
           totalCommitted: 0,
           netVirtualChips: 0,
         };
         row.hands += 1;
-        row.folded += player.folded ? 1 : 0;
-        row.totalCommitted += player.totalCommitted;
-        row.netVirtualChips += player.endingStack - player.startingStack;
-        playerAgg.set(player.userId, row);
+        row.folded += record.folded ? 1 : 0;
+        row.totalCommitted += record.totalCommitted;
+        row.netVirtualChips += record.netResult;
+        playerAgg.set(record.userId, row);
       }
     }
 
@@ -368,7 +341,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const leader = playerLeaderboard[0];
     const insights = [
       largestHand
-        ? `最大底池来自 ${largestHand.room?.name ?? "已删除房间"} 第 ${largestHand.handNumber} 手，底池 ${largestHand.potTotal}。`
+        ? `最大底池来自 ${largestHand.roomName ?? "已删除房间"} 第 ${largestHand.handNumber} 手，底池 ${largestHand.potTotal}。`
         : "暂无可分析的牌局记录。",
       totalHands > 0 ? `平均底池为 ${Math.round(totalPot / totalHands)}，摊牌率为 ${Math.round(ratio(showdownHands, totalHands) * 100)}%。` : "暂无平均底池数据。",
       timeoutActions > 0 ? `最近行动中有 ${timeoutActions} 次超时自动处理，可关注行动时间设置。` : "最近没有超时自动处理记录。",
@@ -384,10 +357,10 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         showdownHands,
         showdownRate: ratio(showdownHands, totalHands),
         timeoutActions,
-        autoFoldCount: actions.filter((action) => action.action === "timeout-auto-fold").length,
-        autoCheckCount: actions.filter((action) => action.action === "timeout-auto-check").length,
+        autoFoldCount: allActions.filter((a) => a.action === "timeout-auto-fold").length,
+        autoCheckCount: allActions.filter((a) => a.action === "timeout-auto-check").length,
         averagePlayersPerHand: ratio(
-          hands.reduce((sum, hand) => sum + hand.players.length, 0),
+          histories.length,
           totalHands,
         ),
       },
@@ -464,15 +437,19 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     return { ok: true };
   });
 
-  app.delete("/admin/rooms/:roomId", { preHandler: requireAdmin }, async (request) => {
+  app.delete("/admin/rooms/:roomId", { preHandler: requireUser }, async (request, reply) => {
     const actor = requestUser(request);
     const { roomId } = z.object({ roomId: z.string() }).parse(request.params);
     const room = await prisma.room.findUnique({
       where: { id: roomId },
-      select: { id: true, name: true, status: true, closedAt: true, deletedAt: true },
+      select: { id: true, name: true, status: true, closedAt: true, deletedAt: true, createdById: true },
     });
     if (!room || room.deletedAt) {
       return { ok: true };
+    }
+
+    if (actor.role !== "ADMIN" && room.createdById !== actor.id) {
+      return reply.code(403).send({ message: "只有管理员或房间创建者可以删除房间" });
     }
 
     const runtimeRoom = getRuntimeRoomIfLoaded(roomId);
@@ -538,58 +515,52 @@ async function getAdminRoomRows() {
           },
         },
       },
-      hands: {
-        orderBy: { startedAt: "asc" },
-        include: {
-          players: {
-            include: {
-              user: {
-                select: {
-                  id: true,
-                  username: true,
-                  displayName: true,
-                },
-              },
-            },
-          },
-        },
-      },
     },
   });
 
+  const allRoomIds = rooms.map((r) => r.id);
+  const allHistories = await prisma.userHandHistory.findMany({
+    where: { roomId: { in: allRoomIds } },
+    select: { roomId: true, handId: true, userId: true, netResult: true, potTotal: true, seatIndex: true, startedAt: true, endedAt: true },
+  });
+
+  const roomHandMap = new Map<string, typeof allHistories>();
+  const roomStats = new Map<string, { totalPot: number; largestPot: number; handIds: Set<string>; firstStarted: Date | null; lastEnded: Date | null }>();
+  for (const r of rooms) {
+    roomStats.set(r.id, { totalPot: 0, largestPot: 0, handIds: new Set(), firstStarted: null, lastEnded: null });
+  }
+  for (const h of allHistories) {
+    const s = roomStats.get(h.roomId);
+    if (s) {
+      s.totalPot += h.potTotal;
+      s.largestPot = Math.max(s.largestPot, h.potTotal);
+      s.handIds.add(h.handId);
+      if (!s.firstStarted || h.startedAt < s.firstStarted) s.firstStarted = h.startedAt;
+      if (!s.lastEnded || (h.endedAt && h.endedAt > s.lastEnded)) s.lastEnded = h.endedAt;
+    }
+  }
+
   return rooms.map((room) => {
     const runtime = getRuntimeRoomIfLoaded(room.id);
+    const stats = roomStats.get(room.id)!;
     const profitRows = new Map<
       string,
       {
-        userId: string;
-        username: string;
-        displayName: string;
-        completedNet: number;
-        liveNet: number;
-        netVirtualChips: number;
-        currentStack: number | null;
-        committed: number;
-        connected: boolean | null;
+        userId: string; username: string; displayName: string;
+        completedNet: number; liveNet: number; netVirtualChips: number;
+        currentStack: number | null; committed: number; connected: boolean | null;
       }
     >();
 
-    let totalPot = 0;
-    let largestPot = 0;
-    for (const hand of room.hands) {
-      totalPot += hand.potTotal;
-      largestPot = Math.max(largestPot, hand.potTotal);
-      for (const player of hand.players) {
-        const row = ensureProfitRow(profitRows, player.userId, player.user.displayName, player.user.username);
-        row.completedNet += player.endingStack - player.startingStack;
-      }
+    for (const h of allHistories.filter((r) => r.roomId === room.id)) {
+      const seat = room.seats.find((s) => s.userId === h.userId);
+      const row = ensureProfitRow(profitRows, h.userId, seat?.user.displayName ?? "", seat?.user.username ?? "");
+      row.completedNet += h.netResult;
     }
 
     for (const seat of room.seats) {
       const row = ensureProfitRow(profitRows, seat.userId, seat.user.displayName, seat.user.username);
-      if (seat.status === "OCCUPIED") {
-        row.currentStack = seat.tableChips;
-      }
+      if (seat.status === "OCCUPIED") row.currentStack = seat.tableChips;
     }
 
     if (runtime?.game && runtime.game.phase !== "finished") {
@@ -604,39 +575,28 @@ async function getAdminRoomRows() {
     if (runtime) {
       for (const seat of runtime.seats) {
         const row = ensureProfitRow(profitRows, seat.userId, seat.displayName, "");
-        if (row.currentStack === null) {
-          row.currentStack = seat.tableChips;
-        }
+        if (row.currentStack === null) row.currentStack = seat.tableChips;
         row.connected = seat.connected;
       }
     }
 
     const profitLoss = [...profitRows.values()]
-      .map((row) => ({
-        ...row,
-        netVirtualChips: row.completedNet + row.liveNet,
-      }))
+      .map((row) => ({ ...row, netVirtualChips: row.completedNet + row.liveNet }))
       .sort((a, b) => b.netVirtualChips - a.netVirtualChips || a.displayName.localeCompare(b.displayName, "zh-CN"));
 
-    const firstHand = room.hands[0];
-    const lastHand = room.hands[room.hands.length - 1];
-    const occupiedSeats = room.seats.filter((seat) => seat.status === "OCCUPIED");
-
     return {
-      id: room.id,
-      name: room.name,
+      id: room.id, name: room.name,
       status: runtime?.status ?? room.status,
-      createdAt: room.createdAt,
-      closedAt: room.closedAt,
+      createdAt: room.createdAt, closedAt: room.closedAt,
       createdBy: room.createdBy,
-      seatedCount: runtime?.seats.length ?? occupiedSeats.length,
-      connectedSeatedCount: runtime?.seats.filter((seat) => seat.connected).length ?? 0,
+      seatedCount: runtime?.seats.length ?? room.seats.filter((s) => s.status === "OCCUPIED").length,
+      connectedSeatedCount: runtime?.seats.filter((s) => s.connected).length ?? 0,
       spectatorCount: runtime?.spectators.size ?? 0,
-      totalHands: room.hands.length,
-      totalPot,
-      largestPot,
-      firstHandStartedAt: firstHand?.startedAt ?? null,
-      lastHandEndedAt: lastHand?.endedAt ?? null,
+      totalHands: stats.handIds.size,
+      totalPot: stats.totalPot,
+      largestPot: stats.largestPot,
+      firstHandStartedAt: stats.firstStarted,
+      lastHandEndedAt: stats.lastEnded,
       profitLoss,
     };
   });

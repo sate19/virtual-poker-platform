@@ -11,9 +11,9 @@ interface StatsPayload {
     biggestPotWon: number; tournamentsPlayed: number; tournamentsWon: number;
   };
   recentHands: Array<{
-    id: string; seatIndex: number; startingStack: number; endingStack: number;
-    totalCommitted: number; wonAmount: number;
-    hand: { handNumber: number; potTotal: number; room: { name: string } };
+    id: string; roomName: string; handNumber: number; potTotal: number;
+    startingStack: number; endingStack: number; netResult: number;
+    wonAmount: number; folded: boolean; result: string; startedAt: string;
   }>;
 }
 
@@ -141,9 +141,9 @@ export default function ProfilePage() {
         <h2>最近对局</h2>
         {(data?.recentHands ?? []).map((item) => (
           <div className="listRow" key={item.id}>
-            <span>{item.hand.room.name} #{item.hand.handNumber}</span>
+            <span>{item.roomName} #{item.handNumber}</span>
             <span className="muted">
-              底池 {item.hand.potTotal} · {item.startingStack} → {item.endingStack}
+              底池 {item.potTotal} · {item.result === "win" ? "赢" : item.result === "fold" ? "弃牌" : item.result === "split" ? "平分" : "输"} · {item.startingStack} → {item.endingStack}
             </span>
           </div>
         ))}

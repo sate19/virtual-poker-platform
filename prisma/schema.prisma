@@ -56,8 +56,7 @@ model User {
   stats                UserStats?
   createdRooms         Room[]             @relation("RoomCreator")
   roomSeats            RoomSeat[]
-  hands                HandPlayer[]
-  actions              GameAction[]
+  handHistories        UserHandHistory[]
   chatMessages         ChatMessage[]
   auditLogs            AdminAuditLog[]     @relation("AuditActor")
   chipLedgerEntries    VirtualChipLedger[]
@@ -94,10 +93,10 @@ model Room {
   creatorOnlyStart   Boolean       @default(false)
   allowSpectators    Boolean       @default(true)
   rabbitHunting      Boolean       @default(true)
+  deckType            String        @default("standard")
   createdById        String
   createdBy          User          @relation("RoomCreator", fields: [createdById], references: [id])
   seats              RoomSeat[]
-  hands              Hand[]
   chats              ChatMessage[]
   gameSnapshot       Json?
   createdAt          DateTime      @default(now())
@@ -123,54 +122,40 @@ model RoomSeat {
   @@unique([roomId, userId])
 }
 
-model Hand {
-  id                 String       @id @default(cuid())
-  roomId             String
-  room               Room         @relation(fields: [roomId], references: [id], onDelete: Cascade)
-  handNumber         Int
-  buttonSeatIndex    Int
-  smallBlind         Int
-  bigBlind           Int
-  ante               Int           @default(0)
-  board              Json
-  potTotal           Int
-  result             Json
-  stateSnapshot      Json
-  startedAt          DateTime     @default(now())
-  endedAt            DateTime?
-  players            HandPlayer[]
-  actions            GameAction[]
-}
+model UserHandHistory {
+  id              String    @id @default(cuid())
+  handId          String
+  roomId          String
+  roomName        String
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  handNumber      Int
+  playerCount     Int
+  buttonSeatIndex Int
+  deckType        String    @default("standard")
+  smallBlind      Int
+  bigBlind        Int
+  ante            Int
+  seatIndex       Int
+  holeCards       Json
+  communityCards  Json
+  startingStack   Int
+  endingStack     Int
+  netResult       Int
+  totalCommitted  Int
+  folded          Boolean
+  wonAmount       Int
+  bestHand        Json?
+  potTotal        Int
+  result          String
+  actions         Json
+  opponents       Json?
+  startedAt       DateTime
+  endedAt         DateTime?
+  createdAt       DateTime  @default(now())
 
-model HandPlayer {
-  id                 String   @id @default(cuid())
-  handId             String
-  hand               Hand     @relation(fields: [handId], references: [id], onDelete: Cascade)
-  userId             String
-  user               User     @relation(fields: [userId], references: [id])
-  seatIndex          Int
-  startingStack      Int
-  endingStack        Int
-  totalCommitted     Int
-  holeCards          Json
-  folded             Boolean
-  wonAmount          Int      @default(0)
-
-  @@unique([handId, userId])
-}
-
-model GameAction {
-  id                 String     @id @default(cuid())
-  roomId             String
-  handId             String?
-  hand               Hand?      @relation(fields: [handId], references: [id], onDelete: SetNull)
-  userId             String?
-  user               User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
-  phase              HandPhase?
-  action             String
-  amount             Int?
-  metadata           Json?
-  createdAt          DateTime   @default(now())
+  @@index([userId, createdAt])
+  @@index([handId])
 }
 
 model ChatMessage {

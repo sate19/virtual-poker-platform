@@ -3,6 +3,7 @@ import { compareEvaluations, evaluateSevenCards } from "./handEvaluator";
 import { awardSidePots, buildSidePots } from "./sidePots";
 import type {
   Card,
+  DeckType,
   EnginePlayer,
   GameActionLogEntry,
   HandEvaluation,
@@ -30,6 +31,7 @@ export interface StartHandInput {
   ante?: number;
   previousButtonSeatIndex?: number;
   handNumber?: number;
+  deckType?: DeckType;
   random?: () => number;
 }
 
@@ -54,7 +56,7 @@ export function startHand(input: StartHandInput): PokerGameState {
     activePlayers.map((player) => player.seatIndex),
   );
 
-  let deck = shuffleDeck(createDeck(), input.random);
+  let deck = shuffleDeck(createDeck(input.deckType ?? "standard"), input.random);
   const players: EnginePlayer[] = activePlayers.map((player) => ({
     ...player,
     startingStack: player.stack,
@@ -80,6 +82,7 @@ export function startHand(input: StartHandInput): PokerGameState {
     smallBlind: input.smallBlind,
     bigBlind: input.bigBlind,
     ante: input.ante ?? 0,
+    deckType: input.deckType ?? "standard",
     buttonSeatIndex,
     smallBlindSeatIndex,
     bigBlindSeatIndex,
@@ -232,6 +235,7 @@ export function getPublicGameStateForUser(
     smallBlind: state.smallBlind,
     bigBlind: state.bigBlind,
     ante: state.ante,
+    deckType: state.deckType,
     buttonSeatIndex: state.buttonSeatIndex,
     smallBlindSeatIndex: state.smallBlindSeatIndex,
     bigBlindSeatIndex: state.bigBlindSeatIndex,
@@ -764,7 +768,7 @@ function calculateRunoutEquities(state: PokerGameState, boardCards: Card[]): Run
     const deadCards = new Set(
       [...boardCards, ...players.flatMap((player) => player.holeCards)].map((card) => cardKey(card)),
     );
-    const unknownCards = createDeck().filter((card) => !deadCards.has(cardKey(card)));
+    const unknownCards = createDeck(state.deckType).filter((card) => !deadCards.has(cardKey(card)));
     const exactCount = combinationCount(unknownCards.length, missingCards);
     if (exactCount <= 2500) {
       visitCombinations(unknownCards, missingCards, score);
