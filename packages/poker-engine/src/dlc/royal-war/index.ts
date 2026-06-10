@@ -19,6 +19,7 @@ export function isSmallJoker(card: Card): boolean {
 }
 
 export function createRoyalWarDeck(): Card[] {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { createStandardDeck } = require("../standard");
   return [...createStandardDeck(), BIG_JOKER, SMALL_JOKER];
 }

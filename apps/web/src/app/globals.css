@@ -317,6 +317,9 @@ button:disabled {
   margin: 32px auto;
   display: grid;
   gap: 14px;
+  max-height: calc(100vh - 140px);
+  overflow-y: auto;
+  padding-right: 8px;
 }
 
 .field {
@@ -1178,6 +1181,23 @@ button:disabled {
   font-weight: 900;
   box-shadow: 0 6px 14px rgba(0, 0, 0, 0.26);
   z-index: 10;
+}
+
+.straddleChip {
+  width: auto;
+  min-width: 34px;
+  padding: 0 8px;
+  border-radius: 999px;
+  color: #fff;
+  background: #e879f9;
+  font-size: 12px;
+  font-weight: 900;
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.26);
+  z-index: 10;
+}
+
+.straddleChip + .straddleChip {
+  margin-left: 0;
 }
 
 .blindChip {
@@ -2109,6 +2129,68 @@ button:disabled {
   border: 1px solid #f59e0b;
   border-radius: 999px;
   vertical-align: middle;
+}
+
+.miniGameTags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.miniGameTag {
+  display: inline-block;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #6d28d9;
+  background: linear-gradient(135deg, #ede9fe, #ddd6fe);
+  border: 1px solid #a78bfa;
+  border-radius: 999px;
+  cursor: help;
+}
+
+.miniGameInline {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: #7c3aed;
+  margin-top: 2px;
+}
+
+/* Tooltip on hover */
+[data-tooltip] {
+  position: relative;
+}
+
+[data-tooltip]:hover::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #fff;
+  background: #1e1e2e;
+  border-radius: 6px;
+  white-space: nowrap;
+  z-index: 9999;
+  pointer-events: none;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+[data-tooltip]:hover::before {
+  content: "";
+  position: absolute;
+  bottom: calc(100% + 1px);
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: #1e1e2e;
+  z-index: 9999;
+  pointer-events: none;
 }
 
 .rabbitBtn {

@@ -94,6 +94,11 @@ model Room {
   allowSpectators    Boolean       @default(true)
   rabbitHunting      Boolean       @default(true)
   deckType            String        @default("standard")
+  sevenTwo            Boolean       @default(false)
+  bombPot             Boolean       @default(false)
+  straddle            Boolean       @default(false)
+  showOne             Boolean       @default(false)
+  threePeat           Boolean       @default(false)
   createdById        String
   createdBy          User          @relation("RoomCreator", fields: [createdById], references: [id])
   seats              RoomSeat[]

@@ -30,6 +30,7 @@ export const RANK_VALUE: Record<Rank, number> = {
 export function createDeck(deckType: DeckType = "standard"): Card[] {
   if (deckType === "royal-war") {
     try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const mod = require("./dlc/royal-war") as { createRoyalWarDeck(): Card[] };
       return mod.createRoyalWarDeck();
     } catch {

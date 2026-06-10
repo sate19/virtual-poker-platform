@@ -14,6 +14,14 @@ export interface AuthUser {
   isBanned: boolean;
 }
 
+export interface MiniGameSettings {
+  sevenTwo: boolean;
+  bombPot: boolean;
+  straddle: boolean;
+  showOne: boolean;
+  threePeat: boolean;
+}
+
 export interface RoomSettingsDto {
   name: string;
   maxPlayers: number;
@@ -28,6 +36,7 @@ export interface RoomSettingsDto {
   allowSpectators: boolean;
   rabbitHunting: boolean;
   deckType: string;
+  miniGames: MiniGameSettings;
 }
 
 export interface RoomSummaryDto {
@@ -44,6 +53,7 @@ export interface RoomSummaryDto {
   actionTimeoutSeconds: number;
   creatorOnlyStart: boolean;
   deckType: string;
+  miniGames: MiniGameSettings;
   createdById: string;
   createdAt: string;
 }

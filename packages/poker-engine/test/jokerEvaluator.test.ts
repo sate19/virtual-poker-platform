@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   BIG_JOKER_RANKS,
   SMALL_JOKER_RANKS,
-  compareEvaluations,
   evaluateHand,
   evaluateSevenCards,
   evaluateSevenCardsPure,
@@ -13,10 +12,7 @@ import {
   BIG_JOKER,
   SMALL_JOKER,
   isJoker,
-  isBigJoker,
-  isSmallJoker,
   expandJokers,
-  evaluateSevenWithJokers,
 } from "../src/dlc/royal-war";
 
 describe("joker utilities", () => {

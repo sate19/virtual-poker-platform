@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Plus, RefreshCw, Trash2 } from "lucide-react";
-import type { AuthUser, RoomSummaryDto } from "@friends-poker/shared";
+import type { AuthUser, MiniGameSettings, RoomSummaryDto } from "@friends-poker/shared";
 import { apiFetch, getMe } from "../../lib/api";
 
 export default function RoomsPage() {
@@ -93,6 +93,13 @@ export default function RoomsPage() {
                 <span className="muted">观战</span>
                 <strong>{room.spectatorCount}</strong>
               </div>
+              {getActiveMiniGameLabels(room.miniGames).length > 0 && (
+                <div className="miniGameTags">
+                  {getActiveMiniGameLabels(room.miniGames).map((mg) => (
+                    <span className="miniGameTag" title={mg.desc} key={mg.key}>{mg.label}</span>
+                  ))}
+                </div>
+              )}
             </Link>
             {(me?.role === "ADMIN" || me?.id === room.createdById) && (
               <button
@@ -111,4 +118,22 @@ export default function RoomsPage() {
       </div>
     </main>
   );
+}
+
+const MINI_GAME_LABELS: Record<keyof MiniGameSettings, string> = {
+  sevenTwo: "🎯 7-2",
+  bombPot: "💣 炸弹底池",
+  straddle: "🎲 抓头",
+  showOne: "👁️ 亮一张",
+  threePeat: "🔥 三连冠",
+};
+
+function getActiveMiniGameLabels(miniGames?: MiniGameSettings): Array<{ key: string; label: string; desc: string }> {
+  if (!miniGames) return [];
+  return Object.entries(miniGames)
+    .filter(([, enabled]) => enabled)
+    .map(([key]) => {
+      const mgKey = key as keyof MiniGameSettings;
+      return { key, label: MINI_GAME_LABELS[mgKey] ?? key, desc: MINI_GAME_LABELS[mgKey] ?? key };
+    });
 }

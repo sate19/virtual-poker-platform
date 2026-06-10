@@ -12,7 +12,7 @@ import {
   type PokerGameState,
   type RunoutMode,
 } from "@friends-poker/poker-engine";
-import type { AuthUser, ChatMessageDto, RoomSettingsDto, RoomStatus, RoomSummaryDto } from "@friends-poker/shared";
+import type { AuthUser, ChatMessageDto, MiniGameSettings, RoomSettingsDto, RoomStatus, RoomSummaryDto } from "@friends-poker/shared";
 import { getAutomaticTimeoutAction, reconcileActionClock } from "./actionClock";
 import { type AIDecision, getAIDecision } from "./aiPlayer";
 import { config } from "./config";
@@ -42,6 +42,8 @@ export interface RuntimeRoom {
   handCounter: number;
   nextHandReadyAt?: string;
   revealedPlayerIds: Set<string>;
+  /** Track consecutive wins per user for three-peat mini-game */
+  threePeatWinStreak: Map<string, number>;
 }
 
 type PersistedSeat = {
@@ -142,6 +144,13 @@ export async function hydrateRoomsFromDatabase(): Promise<void> {
         allowSpectators: persisted.allowSpectators,
         rabbitHunting: (persisted as any).rabbitHunting ?? true,
         deckType: (persisted as any).deckType ?? "standard",
+        miniGames: {
+          sevenTwo: (persisted as any).sevenTwo ?? false,
+          bombPot: (persisted as any).bombPot ?? false,
+          straddle: (persisted as any).straddle ?? false,
+          showOne: (persisted as any).showOne ?? false,
+          threePeat: (persisted as any).threePeat ?? false,
+        },
       },
       seats: persisted.seats.map((seat: PersistedSeat) => ({
         userId: seat.userId,
@@ -156,6 +165,7 @@ export async function hydrateRoomsFromDatabase(): Promise<void> {
       game: persisted.gameSnapshot as unknown as PokerGameState | undefined,
       handCounter: Number((persisted.gameSnapshot as any)?.handNumber ?? 0),
       revealedPlayerIds: new Set(),
+      threePeatWinStreak: new Map(),
     };
 
     if (room.game) {
@@ -199,6 +209,7 @@ export function listRooms(): RoomSummaryDto[] {
       actionTimeoutSeconds: room.settings.actionTimeoutSeconds,
       creatorOnlyStart: room.settings.creatorOnlyStart,
       deckType: (room.settings.deckType ?? "standard") as DeckType,
+      miniGames: room.settings.miniGames ?? ({} as MiniGameSettings),
       createdById: room.createdById,
       createdAt: room.createdAt,
     }));
@@ -245,6 +256,11 @@ export async function createRuntimeRoom(user: AuthUser, input: RoomSettingsDto):
       allowSpectators: input.allowSpectators,
       rabbitHunting: input.rabbitHunting,
       deckType: input.deckType ?? "standard",
+      sevenTwo: input.miniGames?.sevenTwo ?? false,
+      bombPot: input.miniGames?.bombPot ?? false,
+      straddle: input.miniGames?.straddle ?? false,
+      showOne: input.miniGames?.showOne ?? false,
+      threePeat: input.miniGames?.threePeat ?? false,
       createdById: user.id,
     },
   });
@@ -260,6 +276,7 @@ export async function createRuntimeRoom(user: AuthUser, input: RoomSettingsDto):
     spectators: new Map(),
     handCounter: 0,
     revealedPlayerIds: new Set(),
+    threePeatWinStreak: new Map(),
   };
   rooms.set(room.id, room);
   return room;
@@ -943,7 +960,14 @@ async function handleHandPauseElapsed(roomId: string): Promise<void> {
   const removedBustedSeats = await standUpBustedSeats(latest);
   const nextHandSeats = latest.seats.filter((seat) => seat.tableChips > 0);
   if (nextHandSeats.length >= latest.settings.minPlayersToStart) {
-    await beginRuntimeHand(latest, nextHandSeats);
+    try {
+      await beginRuntimeHand(latest, nextHandSeats);
+    } catch (err) {
+      console.error("Auto-next hand failed:", err);
+      // Re-schedule the timer to retry after a short delay
+      latest.nextHandReadyAt = new Date(Date.now() + 3000).toISOString();
+      scheduleHandPauseTimer(roomId);
+    }
     if (realtimeServer) {
       await emitRoomState(realtimeServer, roomId);
       await emitAllRoomLists(realtimeServer);
@@ -1196,6 +1220,11 @@ async function handleActionTimeout(roomId: string, userId: string, deadlineAt: s
   }
 }
 
+const BOMB_POT_INTERVAL = 5;
+const BOMB_POT_ANTE_MULTIPLIER = 3;
+const SEVEN_TWO_BOUNTY_MULTIPLIER = 1;
+const THREE_PEAT_BOUNTY = 100;
+
 async function beginRuntimeHand(room: RuntimeRoom, seats: RuntimeSeat[]): Promise<void> {
   room.revealedPlayerIds.clear();
   for (const seat of seats) {
@@ -1206,9 +1235,22 @@ async function beginRuntimeHand(room: RuntimeRoom, seats: RuntimeSeat[]): Promis
     }
   }
   room.handCounter += 1;
+
+  const isBombPotHand =
+    room.settings.miniGames?.bombPot && room.handCounter % BOMB_POT_INTERVAL === 0;
+  const bombPotAmount = isBombPotHand ? room.settings.bigBlind * BOMB_POT_ANTE_MULTIPLIER : undefined;
+  const useStraddle = room.settings.miniGames?.straddle ?? false;
+
+  const activePlayers = seats.filter((s) => s.tableChips > 0);
+  if (activePlayers.length < 2) {
+    room.handCounter -= 1; // revert since no hand was started
+    console.warn("Not enough players to start hand:", activePlayers.length);
+    return;
+  }
+
   room.game = startHand({
     handId: randomUUID(),
-    players: seats.map((seat) => ({
+    players: activePlayers.map((seat) => ({
       userId: seat.userId,
       displayName: seat.displayName,
       seatIndex: seat.seatIndex,
@@ -1221,6 +1263,8 @@ async function beginRuntimeHand(room: RuntimeRoom, seats: RuntimeSeat[]): Promis
     previousButtonSeatIndex: room.game?.buttonSeatIndex,
     handNumber: room.handCounter,
     deckType: (room.settings.deckType ?? "standard") as DeckType,
+    bombPotAmount,
+    straddle: useStraddle,
   });
   reconcileActionClock(room.game, room.settings.actionTimeoutSeconds, new Date(), true);
   room.status = "PLAYING";
@@ -1379,6 +1423,43 @@ async function settleFinishedRoomIfNeeded(room: RuntimeRoom): Promise<boolean> {
   delete room.game.actionClock;
   syncStacksFromGame(room);
   await persistFinishedHand(room);
+
+  // --- Mini-game settlements ---
+  const miniGames = room.settings.miniGames ?? {};
+  const winners = findHandWinners(room.game);
+
+  for (const winner of winners) {
+    // 7-2 Game: winner with 7-2 offsuit gets bounty from each seated player
+    if (miniGames.sevenTwo && hasSevenTwoOffsuit(winner.holeCards)) {
+      const bounty = room.settings.bigBlind * SEVEN_TWO_BOUNTY_MULTIPLIER;
+      await distributeBounty(room, winner.userId, bounty, "7-2 游戏赏金");
+    }
+
+    // Three-peat: track and reward consecutive wins
+    if (miniGames.threePeat) {
+      const streak = (room.threePeatWinStreak.get(winner.userId) ?? 0) + 1;
+      room.threePeatWinStreak.set(winner.userId, streak);
+      if (streak >= 3) {
+        await distributeBounty(room, winner.userId, THREE_PEAT_BOUNTY, "三连冠赏金");
+        room.threePeatWinStreak.set(winner.userId, 0);
+      }
+    }
+  }
+
+  // Reset three-peat streaks for non-winners
+  if (miniGames.threePeat) {
+    for (const player of room.game.players) {
+      if (!winners.some((w) => w.userId === player.userId)) {
+        room.threePeatWinStreak.set(player.userId, 0);
+      }
+    }
+  }
+
+  // Show One: log a marker so client knows winner should reveal
+  if (miniGames.showOne && winners.length > 0) {
+    logMiniGame(room, "show-one-required", winners.map((w) => w.userId));
+  }
+
   for (const seat of room.seats) {
     seat.ready = false;
   }
@@ -1428,5 +1509,83 @@ function forcedCommitmentForSeat(room: RuntimeRoom, seatIndex: number): number {
     forced += room.settings.bigBlind;
   }
   return forced;
+}
+
+/** Find players who won chips this hand */
+function findHandWinners(game: PokerGameState): Array<{ userId: string; holeCards: Card[] }> {
+  const winnerIds = new Set(
+    game.awards.flatMap((award) => award.winnerIds),
+  );
+  return game.players
+    .filter((player) => winnerIds.has(player.userId) && player.holeCards.length === 2)
+    .map((player) => ({ userId: player.userId, holeCards: player.holeCards }));
+}
+
+/** Check if hole cards are 7 and 2 of different suits */
+function hasSevenTwoOffsuit(holeCards: Card[]): boolean {
+  if (holeCards.length !== 2) return false;
+  const [a, b] = holeCards;
+  if (!a || !b) return false;
+  const ranks = new Set([a.rank, b.rank]);
+  return ranks.has("7") && ranks.has("2") && a.suit !== b.suit;
+}
+
+/** Distribute bounty: deduct from all seated players, give to target */
+async function distributeBounty(
+  room: RuntimeRoom,
+  recipientId: string,
+  amount: number,
+  reason: string,
+): Promise<void> {
+  const recipientSeat = room.seats.find((seat) => seat.userId === recipientId);
+  if (!recipientSeat) return;
+
+  let totalCollected = 0;
+  const deductions: Array<{ userId: string; delta: number }> = [];
+
+  for (const seat of room.seats) {
+    if (seat.userId === recipientId) continue;
+    const pay = Math.min(amount, seat.tableChips);
+    if (pay <= 0) continue;
+    seat.tableChips -= pay;
+    totalCollected += pay;
+    deductions.push({ userId: seat.userId, delta: -pay });
+  }
+
+  if (totalCollected === 0) return;
+
+  recipientSeat.tableChips += totalCollected;
+
+  await prisma.virtualChipLedger.createMany({
+    data: [
+      ...deductions.map((d) => ({
+        userId: d.userId,
+        delta: d.delta,
+        reason,
+        roomId: room.id,
+      })),
+      {
+        userId: recipientId,
+        delta: totalCollected,
+        reason,
+        roomId: room.id,
+      },
+    ],
+  });
+}
+
+/** Log a mini-game event in the game's action log */
+function logMiniGame(
+  room: RuntimeRoom,
+  action: string,
+  userIds: string[],
+): void {
+  if (!room.game) return;
+  room.game.actionLog.push({
+    userId: userIds[0],
+    action,
+    phase: room.game.phase,
+    createdAt: new Date().toISOString(),
+  });
 }
 
