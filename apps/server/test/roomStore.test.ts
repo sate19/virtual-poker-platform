@@ -82,11 +82,13 @@ describe("room store seating", () => {
       createdById: "owner-1",
       createdAt: new Date("2026-06-07T00:00:00.000Z").toISOString(),
       seats: [
-        { userId: "busted", displayName: "出局玩家", seatIndex: 0, tableChips: 0, ready: false, connected: true },
-        { userId: "winner", displayName: "获胜玩家", seatIndex: 1, tableChips: 400, ready: false, connected: true },
+        { userId: "busted", displayName: "出局玩家", seatIndex: 0, tableChips: 0, ready: false, connected: true, pendingChips: 0 },
+        { userId: "winner", displayName: "获胜玩家", seatIndex: 1, tableChips: 400, ready: false, connected: true, pendingChips: 0 },
       ],
       spectators: new Map(),
       handCounter: 1,
+      revealedPlayerIds: new Set(),
+      threePeatWinStreak: new Map(),
     };
 
     await expect(__testing.standUpBustedSeats(room)).resolves.toBe(true);

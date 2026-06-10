@@ -1462,7 +1462,6 @@ function useJokerRanks(allCards: Card[], phase: string | undefined) {
       map.set(`${c.rank}${c.suit}`, getBestJokerRank(c, allCards));
     }
     return map;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, allCards]);
 }
 
@@ -1473,7 +1472,6 @@ function useHandLabels(players: PublicEnginePlayer[] | undefined, communityCards
       map.set(p.userId, describeCurrentHand(p, communityCards));
     }
     return map;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, players, communityCards]);
 }
 
